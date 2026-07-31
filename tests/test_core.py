@@ -50,6 +50,21 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(sequences.tolist(), ["ACGU"])
 
+    def test_remove_sequences_close_to_wildtype(self):
+        setup = make_setup(device="cpu")
+        msa = MultipleSequenceAlignment(
+            ["wt", "one_mutation", "distant"],
+            [[1, 2, 3, 4], [1, 2, 3, 5], [5, 6, 7, 8]],
+            setup=setup,
+        )
+        wildtype = MultipleSequenceAlignment(["wildtype"], [[1, 2, 3, 4]], setup=setup)
+
+        removed = msa.remove_sequences_close_to_wildtype(wildtype, 0.25)
+
+        self.assertEqual(removed.tolist(), [0, 1])
+        self.assertEqual(msa.headers.tolist(), ["distant"])
+        self.assertEqual(msa.seqs.tolist(), [[5, 6, 7, 8]])
+
     def test_protein_sequence_views_update_parent(self):
         protein = ProteinSequence("ACd-E")
 

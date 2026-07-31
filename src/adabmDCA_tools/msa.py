@@ -252,6 +252,63 @@ class MultipleSequenceAlignment:
         self.recompute_statistics(fast=fast)
         return idxs
 
+    def remove_sequences_close_to_wildtype(self, wildtype, threshold, fast=True):
+        """Remove sequences too similar to one or more wildtype sequences.
+
+        Similarity is measured as normalized Hamming distance, i.e. the
+        fraction of aligned positions that differ.  A sequence is removed if
+        its distance from *any* sequence in ``wildtype`` is less than or equal
+        to ``threshold``.
+
+        Parameters
+        ----------
+        wildtype : MultipleSequenceAlignment
+            One or more wildtype sequences, represented by an MSA.  Their
+            alignment length and alphabet must match this MSA.
+        threshold : float
+            Maximum allowed fraction of mismatches, in ``[0, 1]``.
+        fast : bool, default=True
+            Passed to :meth:`recompute_statistics`.
+
+        Returns
+        -------
+        numpy.ndarray
+            Indices of removed sequences, or ``None`` if no sequence matches.
+        """
+        if not isinstance(wildtype, MultipleSequenceAlignment):
+            raise TypeError("wildtype must be a MultipleSequenceAlignment.")
+        if not isinstance(threshold, (float, int, np.integer, np.floating)):
+            raise TypeError("threshold must be a number in [0.0, 1.0].")
+        threshold = float(threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("Distance threshold must be within [0.0, 1.0].")
+        if wildtype.L != self.L:
+            raise ValueError(
+                f"Alignment length mismatch: got L={wildtype.L}, expected L={self.L}."
+            )
+        if wildtype.q != self.q or wildtype.tokens != self.tokens:
+            raise ValueError("wildtype must use the same alphabet as this MSA.")
+        if wildtype.M == 0:
+            raise ValueError("wildtype must contain at least one sequence.")
+
+        # Compute the minimum distance to any wildtype without constructing a
+        # one-hot tensor. The temporary tensor is at most M x N x L integers.
+        distances = (self.enc[:, None, :] != wildtype.enc[None, :, :]).float().mean(dim=2)
+        idxs = torch.where(distances.min(dim=1).values <= threshold)[0].numpy()
+        if idxs.size == 0:
+            print(f"No sequences are within distance threshold {threshold:.2f} of wildtype.")
+            return None
+
+        print(
+            f"Removing sequences within distance threshold {threshold:.2f} of wildtype: "
+            f"{idxs.tolist()}\nNumber of sequences removed: {idxs.size}"
+        )
+        keep = np.delete(np.arange(self.M), idxs)
+        self.enc = self.enc.index_select(0, torch.as_tensor(keep, dtype=torch.long)).contiguous()
+        self.headers = np.delete(self.headers, idxs, axis=0)
+        self.recompute_statistics(fast=fast)
+        return idxs
+
     # --------------------------------- #
     # -- Principal component analysis -- #
     def _to_onehot_for_projection(self, sequences, device=None) -> tuple[torch.Tensor, int]:
