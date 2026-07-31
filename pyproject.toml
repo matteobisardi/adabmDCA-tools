@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utils-dca"
+version = "0.1.0"
+description = "Local helpers for DCA analyses"
+authors = [{ name = "Matteo Bisardi", email = "matteo.bisardi@gmail.com" }]
+readme = "README.md"
+license = { text = "Proprietary" }
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "torch",
+  "pandas",
+  "matplotlib",
+  "scipy",
+  "editdistance",
+  "adabmDCA",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
