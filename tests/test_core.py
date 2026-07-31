@@ -4,8 +4,8 @@ from pathlib import Path
 
 import torch
 
-from utils_dca import MultipleSequenceAlignment, ProteinSequence, make_setup
-from utils_dca.fasta import import_from_fasta_keep_order
+from adabmDCApy_tools import MultipleSequenceAlignment, ProteinSequence, make_setup
+from adabmDCApy_tools.fasta import import_from_fasta_keep_order
 
 
 class CoreTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-# utils_dca
+# adabmDCApy_tools
 
 Local utilities built on top of `adabmDCA` for handling multiple-sequence alignments (MSAs), protein sequences, and related helper functions.
 The package is organized into focused modules:
@@ -22,14 +22,14 @@ Make sure `adabmDCA` and its dependencies are already available in the same envi
 ## Quick Start
 
 ```python
-from utils_dca import MultipleSequenceAlignment, import_unaligned_fasta
+from adabmDCApy_tools import MultipleSequenceAlignment, import_unaligned_fasta
 
 msa = MultipleSequenceAlignment.from_path("example_msa.fasta")
 msa.compute_gap_frequency()
 msa.summary()
 
 # For explicit control over the alphabet, device, or dtype:
-from utils_dca import make_setup
+from adabmDCApy_tools import make_setup
 setup = make_setup(alphabet="protein", device="cpu", dtype="float32")
 msa = MultipleSequenceAlignment.from_path("example_msa.fasta", setup)
 
