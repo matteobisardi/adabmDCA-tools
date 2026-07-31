@@ -16,16 +16,14 @@ Make sure `adabmDCA` and its dependencies are already available in the same envi
 
 from utils_dca import MultipleSequenceAlignment, import_unaligned_fasta
 
-setup = {
-    "device": "cpu",
-    "dtype": "float32",
-    "tokens": "-ACDEFGHIKLMNPQRSTVWY",
-    "q": 21,  # number of tokens including gap
-}
-
-msa = MultipleSequenceAlignment.from_path("example_msa.fasta", setup)
+msa = MultipleSequenceAlignment.from_path("example_msa.fasta")
 msa.compute_gap_frequency()
 msa.summary()
+
+# For explicit control over the alphabet, device, or dtype:
+from utils_dca import make_setup
+setup = make_setup(alphabet="protein", device="cpu", dtype="float32")
+msa = MultipleSequenceAlignment.from_path("example_msa.fasta", setup)
 
 headers, sequences = import_unaligned_fasta("example_unaligned.fasta",
                                             tokens=setup["tokens"],

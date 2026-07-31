@@ -22,11 +22,15 @@ from matplotlib.colors import Normalize, LogNorm
 from scipy.stats import spearmanr
 from scipy.stats import entropy as shannon_entropy 
 from editdistance import eval as levenshtein_distance
+from utils_dca.config import make_setup
 from utils_dca.funcs import inverse_one_hot, import_from_fasta_keep_order
 
 class MultipleSequenceAlignment:
-    def __init__(self, headers, seqs, setup):
+    def __init__(self, headers, seqs, setup=None):
         
+        if setup is None:
+            setup = make_setup()
+
         # Get setup
         self._get_setup(setup)
 
@@ -76,14 +80,18 @@ class MultipleSequenceAlignment:
     # ---------------- #
     # -- Import MSA -- #
     @classmethod
-    def from_path(cls, path, setup, remove_duplicates = False):
+    def from_path(cls, path, setup=None, remove_duplicates = False):
+        if setup is None:
+            setup = make_setup()
         tokens = setup["tokens"]
         headers,seqs = import_from_fasta_keep_order(path, tokens, filter_sequences=True, remove_duplicates=remove_duplicates)
         return cls(headers,seqs, setup)
 
 
     @classmethod 
-    def from_onehot(cls, msa_oh, setup):
+    def from_onehot(cls, msa_oh, setup=None):
+        if setup is None:
+            setup = make_setup()
         seqs = torch.argmax(msa_oh, dim=-1).cpu().numpy()
         M = seqs.shape[0]
         headers = ["seq"+str(i) for i in range(1, M+1)]
@@ -316,7 +324,10 @@ class MultipleSequenceAlignment:
 
 
 class ProteinSequence:
-    def __init__(self, afa_sequence : str, setup, name : str = "GeneX" ):
+    def __init__(self, afa_sequence : str, setup=None, name : str = "GeneX" ):
+
+        if setup is None:
+            setup = make_setup()
 
         # Store sequences
         self.name = name
@@ -1225,6 +1236,6 @@ def compute_ppv_contacts(
 
 if __name__ == "__main__":
     print(
-        "\nReminder from 'utils_dca.classes'. Define a dictionary like:\n"
-        "setup = {'tokens': tokens, 'device': device, 'dtype': dtype, 'q': q}"
+        "\nReminder from 'utils_dca.classes'. Setup is optional; use make_setup()\n"
+        "for automatic configuration or pass an explicit setup dictionary."
     )
