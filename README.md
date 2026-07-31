@@ -38,6 +38,33 @@ headers, sequences = import_unaligned_fasta("example_unaligned.fasta",
                                             filter_sequences=True)
 ```
 
+## Memory-conscious use with large alignments
+
+`MultipleSequenceAlignment` keeps its compact encoded alignment (`msa.enc`) on
+CPU. It does **not** create the much larger one-hot tensor during import.
+
+```python
+# Temporary CPU one-hot tensor: the MSA itself does not retain it.
+msa_oh = msa.get_onehot()
+some_function(msa_oh)
+del msa_oh
+
+# Explicit, persistent cache when repeated use is worthwhile.
+msa.get_onehot(device="mps", cache=True)
+some_function(msa.onehot)
+msa.clear_cache()  # releases package-held one-hot and PCA tensors
+```
+
+PCA methods create their own temporary one-hot tensor on the requested device:
+
+```python
+pcs = msa.compute_pca(device="mps")
+msa.clear_cache()  # release the stored PCA basis when projections are no longer needed
+```
+
+`msa.to("mps")` changes the default computation device; it does not move the
+stored alignment away from CPU.
+
 ### Key Features
 
 - MultipleSequenceAlignment

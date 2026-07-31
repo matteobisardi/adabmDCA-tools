@@ -18,7 +18,19 @@ class CoreTests(unittest.TestCase):
         encoded = torch.tensor([[1, 2, 3], [1, 2, 4], [1, 3, 4]])
         onehot = torch.nn.functional.one_hot(encoded, num_classes=21).float()
         msa = MultipleSequenceAlignment.from_onehot(onehot)
+        self.assertEqual(msa.enc.device.type, "cpu")
+        self.assertIsNone(msa.onehot)
+
+        temporary_onehot = msa.get_onehot()
+        self.assertEqual(temporary_onehot.device.type, "cpu")
+        self.assertIsNone(msa.onehot)
+        cached_onehot = msa.get_onehot(cache=True)
+        self.assertIs(msa.onehot, cached_onehot)
+        msa.clear_cache(empty_mps_cache=False)
+        self.assertIsNone(msa.onehot)
+
         self.assertEqual(msa.compute_pca(n_components=2).shape, (3, 2))
+        self.assertIsNone(msa.onehot)
 
         msa.remove_items([0], axis="columns")
         self.assertIsNone(msa.weights)
