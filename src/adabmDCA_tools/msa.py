@@ -35,8 +35,10 @@ class MultipleSequenceAlignment:
         if self.enc.dim() != 2:
             raise ValueError("seqs must be an encoded array with shape (M, L).")
 
-        # ``onehot`` is an optional explicit cache, never created on import.
-        self.onehot = None
+        # The one-hot representation is an optional explicit cache, never
+        # created on import.  Keep it private so ``onehot()`` can be the
+        # public method name.
+        self._onehot_cache = None
         self._onehot_device = None
         self._V = None
         self._pca_mean = None
@@ -92,17 +94,17 @@ class MultipleSequenceAlignment:
         self.clear_cache()
         return self
 
-    def get_onehot(self, device="cpu", *, cache=False) -> torch.Tensor:
+    def onehot(self, device=None, *, cache=False) -> torch.Tensor:
         """Create a one-hot alignment on ``device``.
 
         Parameters
         ----------
         device:
-            Target device. The default is CPU, deliberately independent of
-            ``self.device`` so an ordinary request does not fill MPS memory.
+            Target device. If omitted, use the device selected by
+            :func:`make_setup` (available as ``self.device``).
         cache:
-            If True, keep this tensor as ``msa.onehot`` for reuse. The default
-            False returns a temporary tensor and leaves no package-held cache.
+            If True, keep this tensor internally for reuse. The default False
+            returns a temporary tensor and leaves no package-held cache.
 
         Notes
         -----
@@ -110,22 +112,26 @@ class MultipleSequenceAlignment:
         large temporary MPS tensor, use ``del tensor`` after use and then call
         ``msa.clear_cache()`` if needed.
         """
-        target = torch.device(device)
-        if cache and self.onehot is not None and self._onehot_device == target:
-            return self.onehot
-        if cache and self.onehot is not None:
+        target = self._resolve_device(device)
+        if cache and self._onehot_cache is not None and self._onehot_device == target:
+            return self._onehot_cache
+        if cache and self._onehot_cache is not None:
             # Do not keep two potentially huge cached representations while
             # changing devices.
-            self.onehot = None
+            self._onehot_cache = None
             self._onehot_device = None
 
         encoded = self.enc if target.type == "cpu" else self.enc.to(target)
         result = one_hot(encoded, num_classes=self.q).to(dtype=self.dtype)
 
         if cache:
-            self.onehot = result
+            self._onehot_cache = result
             self._onehot_device = target
         return result
+
+    def get_onehot(self, device=None, *, cache=False) -> torch.Tensor:
+        """Compatibility alias for :meth:`onehot`."""
+        return self.onehot(device=device, cache=cache)
 
     def clear_cache(self, *, empty_mps_cache=True):
         """Release package-held one-hot and PCA tensors.
@@ -133,7 +139,7 @@ class MultipleSequenceAlignment:
         This does not delete tensors held by notebook variables outside this
         object. It only releases caches owned by the MSA itself.
         """
-        self.onehot = None
+        self._onehot_cache = None
         self._onehot_device = None
         self._V = None
         self._pca_mean = None
