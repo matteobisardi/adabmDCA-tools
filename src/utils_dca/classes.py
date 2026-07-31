@@ -817,7 +817,7 @@ class DeepMutationalScanning:
             if dms_matrix is not None:
                 dms_matrix = -dms_matrix
             else:
-                raise Exception("Please compute the in-silico DMS scores by running `GENE.dms.compute(params, setup)`")
+                raise Exception("Please compute the in-silico DMS scores by running `GENE.dms.compute(params)`")
 
         elif data_type == "exp":
             data_mode = "fitness"
