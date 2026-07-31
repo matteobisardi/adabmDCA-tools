@@ -9,7 +9,7 @@ description = "Local helpers for DCA analyses"
 authors = [{ name = "Matteo Bisardi", email = "matteo.bisardi@gmail.com" }]
 readme = "README.md"
 license = { text = "Proprietary" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "numpy",
   "torch",
