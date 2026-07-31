@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from utils_dca import MultipleSequenceAlignment, make_setup
+from utils_dca import MultipleSequenceAlignment, ProteinSequence, make_setup
 from utils_dca.fasta import import_from_fasta_keep_order
 
 
@@ -37,6 +37,23 @@ class CoreTests(unittest.TestCase):
             _, sequences = import_from_fasta_keep_order(path)
 
         self.assertEqual(sequences.tolist(), ["ACGU"])
+
+    def test_protein_sequence_views_update_parent(self):
+        protein = ProteinSequence("ACd-E")
+
+        protein.aligned[2] = "V"
+        self.assertEqual(protein.afa, "AVd-E")
+        self.assertEqual(protein.unaligned.get_string(), "AVDE")
+        self.assertEqual(protein.enc.shape, (4,))
+
+        del protein.aligned[3]
+        self.assertEqual(protein.afa, "AVE")
+        self.assertEqual(protein.L, 3)
+
+        protein.unaligned.insert(2, "G")
+        self.assertEqual(protein.afa, "AGVE")
+        self.assertEqual(protein.aligned.get_string(), "AGVE")
+        self.assertEqual(protein.enc.shape, (4,))
 
 
 if __name__ == "__main__":

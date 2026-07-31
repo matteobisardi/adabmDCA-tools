@@ -19,34 +19,18 @@ class ProteinSequence:
         if setup is None:
             setup = make_setup()
 
-        # Store sequences
-        self.name = name
-        self.afa = afa_sequence
-        self._aligned = self.remove_lowercase(self.afa) # aligned
-        self._unaligned = self.remove_gaps(self.afa).upper() # unaligned
-
-        # Store setup
+        # Store setup before building the encoded representations.
         self._get_setup(setup)
 
-        # Store encoding
-        self.num = encode_sequence(self._aligned, self.tokens)
-        self.enc = torch.tensor(self.num, device= self.device, dtype= torch.int32)
-        self.onehot = one_hot(self.enc.view(1, -1), num_classes= self.q).to(self.dtype)
-
-
-        # Attributes for user
-        self.aligned = _1ProteinSequence(self._aligned)
-        self.unaligned = _1ProteinSequence(self._unaligned)
-
-        # Core sizes
-        self.L: int = len(self._aligned)   # aligned length 
-        self.L_unaligned: int = len(self._unaligned) # unaligned length 
-
-        # Map positions
-        self.a2u, self.u2a = self.map_positions(self.afa)
-
-        # Initialize dms
+        # Store sequences
+        self.name = name
+        self.afa = str(afa_sequence)
         self._dms = None
+        self._refresh_from_afa()
+
+        # Editable, 1-based views backed by this object rather than copies.
+        self.aligned = _1ProteinSequence(self, "aligned")
+        self.unaligned = _1ProteinSequence(self, "unaligned")
         
     @property
     def dms(self):
@@ -66,6 +50,74 @@ class ProteinSequence:
         self.dtype = self.setup["dtype"]
         self.tokens = self.setup["tokens"]
         self.q = self.setup["q"]
+
+    def _refresh_from_afa(self) -> None:
+        """Rebuild every representation derived from ``afa``.
+
+        Editing either public sequence view must keep the encoded tensor,
+        position maps, and DMS helper in sync with the actual sequence.
+        """
+        self._aligned = self.remove_lowercase(self.afa)
+        self._unaligned = self.remove_gaps(self.afa).upper()
+        self._validate_sequence(self._aligned, allow_gaps=True)
+
+        self.num = encode_sequence(self._aligned, self.tokens)
+        self.enc = torch.tensor(self.num, device=self.device, dtype=torch.int32)
+        self.onehot = one_hot(self.enc.view(1, -1), num_classes=self.q).to(self.dtype)
+
+        self.L = len(self._aligned)
+        self.L_unaligned = len(self._unaligned)
+        self.a2u, self.u2a = self.map_positions(self.afa)
+
+        # Existing DMS matrices refer to the previous sequence and are invalid.
+        self._dms = None
+
+    def _validate_sequence(self, sequence: str, *, allow_gaps: bool) -> None:
+        allowed = set(self.tokens)
+        if not allow_gaps:
+            allowed.discard("-")
+        invalid = set(sequence) - allowed
+        if invalid:
+            raise ValueError(
+                f"Unknown token(s) {sorted(invalid)!r}; allowed tokens are {''.join(sorted(allowed))!r}."
+            )
+
+    def _replace_aligned(self, sequence: str) -> None:
+        """Replace the aligned view and preserve deleted lowercase residues when possible."""
+        sequence = str(sequence).upper()
+        self._validate_sequence(sequence, allow_gaps=True)
+
+        if len(sequence) == self.L:
+            iterator = iter(sequence)
+            self.afa = "".join(
+                char if char.islower() else next(iterator) for char in self.afa
+            )
+        else:
+            # A length-changing edit has no unambiguous placement among gaps
+            # and deleted residues, so it becomes a new plain aligned sequence.
+            self.afa = sequence
+        self._refresh_from_afa()
+
+    def _replace_unaligned(self, sequence: str) -> None:
+        """Replace the unaligned view while preserving the alignment when possible."""
+        sequence = str(sequence).upper()
+        self._validate_sequence(sequence, allow_gaps=False)
+
+        if len(sequence) == self.L_unaligned:
+            iterator = iter(sequence)
+            rebuilt = []
+            for char in self.afa:
+                if char == "-":
+                    rebuilt.append(char)
+                    continue
+                replacement = next(iterator)
+                rebuilt.append(replacement.lower() if char.islower() else replacement)
+            self.afa = "".join(rebuilt)
+        else:
+            # Insertion/deletion in unaligned coordinates cannot be mapped to
+            # existing alignment columns unambiguously.
+            self.afa = sequence
+        self._refresh_from_afa()
    
     @staticmethod
     def remove_gaps(seq: str) -> str:
@@ -165,9 +217,20 @@ class ProteinSequence:
         return levenshtein_distance(a, b)
 
 class _1ProteinSequence(MutableSequence):
-    """1-based view over a mutable sequence (e.g., list)."""
-    def __init__(self, seq):
-        self._seq = list(seq)
+    """A 1-based mutable view backed by a :class:`ProteinSequence`."""
+    def __init__(self, protein: ProteinSequence, kind: str):
+        self._protein = protein
+        self._kind = kind
+
+    @property
+    def _sequence(self) -> str:
+        return self._protein._aligned if self._kind == "aligned" else self._protein._unaligned
+
+    def _replace(self, sequence: str) -> None:
+        if self._kind == "aligned":
+            self._protein._replace_aligned(sequence)
+        else:
+            self._protein._replace_unaligned(sequence)
 
     # --- indexing helpers ---
     @staticmethod
@@ -188,30 +251,40 @@ class _1ProteinSequence(MutableSequence):
 
     # --- core MutableSequence requirements ---
     def __len__(self):
-        return len(self._seq)
+        return len(self._sequence)
 
     def __getitem__(self, index):
         if isinstance(index, int):
-            return self._seq[self._map_index(index)]
+            return self._sequence[self._map_index(index)]
         elif isinstance(index, slice):
-            return "".join(self._seq[self._map_slice(index)])
+            return self._sequence[self._map_slice(index)]
         raise TypeError("Index must be int or slice")
 
     def __setitem__(self, index, value):
+        seq = list(self._sequence)
         if isinstance(index, int):
-            self._seq[self._map_index(index)] = value
+            if not isinstance(value, str) or len(value) != 1:
+                raise ValueError("Single-position assignment requires exactly one character.")
+            seq[self._map_index(index)] = value
         elif isinstance(index, slice):
-            self._seq[self._map_slice(index)] = value
+            if isinstance(value, str):
+                replacement = value
+            else:
+                replacement = "".join(value)
+            seq[self._map_slice(index)] = replacement
         else:
             raise TypeError("Index must be int or slice")
+        self._replace("".join(seq))
 
     def __delitem__(self, index):
+        seq = list(self._sequence)
         if isinstance(index, int):
-            del self._seq[self._map_index(index)]
+            del seq[self._map_index(index)]
         elif isinstance(index, slice):
-            del self._seq[self._map_slice(index)]
+            del seq[self._map_slice(index)]
         else:
             raise TypeError("Index must be int or slice")
+        self._replace("".join(seq))
 
     def insert(self, i, value):
         # insert BEFORE 1-based position i (like list.insert with 0-based)
@@ -220,17 +293,20 @@ class _1ProteinSequence(MutableSequence):
             i = len(self) + 1
         if i == 0:
             raise IndexError("1-based indexing: position 0 is invalid")
+        if not isinstance(value, str) or len(value) != 1:
+            raise ValueError("Insertion requires exactly one character.")
         pos = self._map_index(i) if i > 0 else i
-        self._seq.insert(pos, value)
+        seq = list(self._sequence)
+        seq.insert(pos, value)
+        self._replace("".join(seq))
 
     def get_string(self):
-        return "".join(self._seq)
+        return self._sequence
 
 
     # nice-to-haves
     def __iter__(self):
-        return iter(self._seq)
+        return iter(self._sequence)
 
     def __repr__(self):
-        return f'{"".join(self._seq)!r}'
-
+        return f'{self._sequence!r}'
