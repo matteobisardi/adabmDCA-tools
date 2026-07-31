@@ -1,4 +1,4 @@
-"""Configuration helpers for :mod:`adabmDCApy_tools`."""
+"""Configuration helpers for :mod:`adabmDCA_tools`."""
 
 import torch
 
@@ -11,7 +11,7 @@ def make_setup(
     device: str = "auto",
     dtype: str = "float32",
 ) -> dict:
-    """Create the configuration expected by ``adabmDCApy_tools`` classes.
+    """Create the configuration expected by ``adabmDCA_tools`` classes.
 
     Parameters
     ----------
