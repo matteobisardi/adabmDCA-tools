@@ -6,7 +6,7 @@ FASTA files, PCA, and deep mutational scanning workflows.
 
 ## Installation
 
-Install directly from GitHub:
+Install from GitHub:
 
 ```bash
 python -m pip install git+https://github.com/matteobisardi/adabmDCA_tools.git
