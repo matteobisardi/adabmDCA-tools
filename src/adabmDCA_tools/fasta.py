@@ -85,7 +85,7 @@ def import_unaligned_fasta(
     fasta_name: str | Path,
     tokens: Optional[str] = None,
     filter_sequences: bool = False,
-    remove_duplicates: bool = True,
+    remove_duplicates: bool = False,
     ) -> Tuple[List[str], List[str]]:
     """Import unaligned sequences from a FASTA file.
 
@@ -95,6 +95,7 @@ def import_unaligned_fasta(
                 Used only if filter_sequences=True.
         filter_sequences: If True, drop sequences containing characters not in `tokens`.
         remove_duplicates: If True, drop exact duplicate sequence strings (keep first).
+            The default False preserves every record from the input FASTA.
 
     Returns:
         (headers, sequences): two lists of equal length.
@@ -170,5 +171,4 @@ def import_unaligned_fasta(
         headers, sequences = dedup_headers, dedup_sequences
 
     return headers, sequences
-
 

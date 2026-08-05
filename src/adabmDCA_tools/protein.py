@@ -11,6 +11,7 @@ from adabmDCA.fasta import encode_sequence
 from adabmDCA.functional import one_hot
 
 from .config import make_setup
+from .fasta import import_unaligned_fasta
 
 
 class ProteinSequence:
@@ -31,6 +32,39 @@ class ProteinSequence:
         # Editable, 1-based views backed by this object rather than copies.
         self.aligned = _1ProteinSequence(self, "aligned")
         self.unaligned = _1ProteinSequence(self, "unaligned")
+
+    @classmethod
+    def from_path(cls, path, setup=None):
+        """Create a protein sequence from a single-record aligned FASTA file.
+
+        The FASTA sequence is passed to :class:`ProteinSequence` unchanged, so
+        gaps and lowercase residues retain their alignment meaning. The FASTA
+        header is used as the protein name.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Path to an aligned FASTA file containing exactly one sequence.
+        setup : dict, optional
+            Alphabet and compute setup passed to the constructor.
+
+        Returns
+        -------
+        ProteinSequence
+            The imported protein sequence.
+        """
+        headers, sequences = import_unaligned_fasta(
+            path,
+            tokens=None,
+            filter_sequences=False,
+            remove_duplicates=False,
+        )
+        if len(sequences) != 1:
+            raise ValueError(
+                "ProteinSequence.from_path() requires exactly one FASTA sequence; "
+                f"found {len(sequences)}."
+            )
+        return cls(sequences[0], setup=setup, name=str(headers[0]))
         
     @property
     def dms(self):

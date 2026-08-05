@@ -3,23 +3,36 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
+from adabmDCA.fasta import compute_weights
 from adabmDCA.utils import resample_sequences
 
 
-def compute_gap_frequency(msa_oh: torch.Tensor):
-    """Computes the frequency of gaps at each position in a multiple sequence alignment (MSA).
+def compute_gap_frequency(msa_oh: torch.Tensor, th: float):
+    """Compute sequence-weighted gap frequencies for a one-hot MSA.
 
     Args:
         msa_oh (torch.Tensor): A one-hot encoded MSA tensor of shape (N, L, C), where:
             - N is the number of sequences.
             - L is the sequence length.
             - C is the number of possible characters, with index 0 representing gaps.
+        th (float): Sequence-identity threshold used to compute sequence weights.
 
     Returns:
-        torch.Tensor: A 1D tensor of shape (L,), representing the gap frequency at each position.
+        torch.Tensor: A 1D tensor of shape (L,), representing the weighted gap
+            frequency at each position.
     """
-    gap_frequencies = msa_oh[:, :, 0].mean(dim=0)
-    return gap_frequencies
+    if not isinstance(msa_oh, torch.Tensor) or msa_oh.dim() != 3:
+        raise ValueError("msa_oh must be a tensor with shape (N, L, q).")
+    weights = compute_weights(
+        msa_oh,
+        th=th,
+        device=msa_oh.device,
+        dtype=torch.float32,
+    )
+    total_weight = weights.sum()
+    if total_weight <= 0:
+        raise ValueError("The total sequence weight must be positive.")
+    return (weights[:, None] * msa_oh[:, :, 0].to(dtype=weights.dtype)).sum(dim=0) / total_weight
 
 def compute_seqID(a1: torch.Tensor, single_seq: torch.Tensor):
     """
@@ -257,5 +270,4 @@ def compute_ppv_contacts(
     ppv = tp / top_k
 
     return {"ppv": float(ppv), "tp": float(tp), "fp": float(fp), "n_pred": float(top_k), "n_true": float(n_true)}
-
 
