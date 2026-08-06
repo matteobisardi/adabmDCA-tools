@@ -34,12 +34,12 @@ class ProteinSequence:
         self.unaligned = _1ProteinSequence(self, "unaligned")
 
     @classmethod
-    def from_path(cls, path, setup=None):
+    def from_path(cls, path, setup=None, name=None):
         """Create a protein sequence from a single-record aligned FASTA file.
 
         The FASTA sequence is passed to :class:`ProteinSequence` unchanged, so
         gaps and lowercase residues retain their alignment meaning. The FASTA
-        header is used as the protein name.
+        header is used as the protein name unless ``name`` is provided.
 
         Parameters
         ----------
@@ -47,6 +47,8 @@ class ProteinSequence:
             Path to an aligned FASTA file containing exactly one sequence.
         setup : dict, optional
             Alphabet and compute setup passed to the constructor.
+        name : str, optional
+            Name for the protein. If omitted, use the FASTA header.
 
         Returns
         -------
@@ -64,7 +66,8 @@ class ProteinSequence:
                 "ProteinSequence.from_path() requires exactly one FASTA sequence; "
                 f"found {len(sequences)}."
             )
-        return cls(sequences[0], setup=setup, name=str(headers[0]))
+        protein_name = str(headers[0]) if name is None else name
+        return cls(sequences[0], setup=setup, name=protein_name)
         
     @property
     def dms(self):

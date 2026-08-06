@@ -82,11 +82,16 @@ class CoreTests(unittest.TestCase):
             path.write_text(">VIM-2 aligned\nACd\n-E\n")
 
             protein = ProteinSequence.from_path(path, setup=setup)
+            renamed_protein = ProteinSequence.from_path(
+                path, setup=setup, name="CueR"
+            )
 
         self.assertEqual(protein.name, "VIM-2 aligned")
         self.assertEqual(protein.afa, "ACd-E")
         self.assertEqual(protein.aligned.get_string(), "AC-E")
         self.assertEqual(protein.unaligned.get_string(), "ACDE")
+
+        self.assertEqual(renamed_protein.name, "CueR")
 
     def test_protein_sequence_from_path_requires_one_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
