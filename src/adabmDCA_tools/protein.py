@@ -34,7 +34,7 @@ class ProteinSequence:
         self.unaligned = _1ProteinSequence(self, "unaligned")
 
     @classmethod
-    def from_path(cls, path, setup=None, name=None):
+    def from_path(cls, path, setup=None, name="GeneX"):
         """Create a protein sequence from a single-record aligned FASTA file.
 
         The FASTA sequence is passed to :class:`ProteinSequence` unchanged, so
