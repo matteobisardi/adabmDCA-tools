@@ -197,12 +197,12 @@ class MultipleSequenceAlignment:
         self.Meff = float(self.weights.sum())
         return self.weights
 
-    def compute_gap_frequency(self, th):
+    def compute_gap_frequency(self, th=0.8):
         """Compute sequence-weighted gap frequencies for each alignment column.
 
         Parameters
         ----------
-        th : float
+        th : float, default=0.8
             Sequence-identity threshold used to compute the sequence weights.
 
         Returns

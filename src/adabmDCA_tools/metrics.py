@@ -7,7 +7,7 @@ from adabmDCA.fasta import compute_weights
 from adabmDCA.utils import resample_sequences
 
 
-def compute_gap_frequency(msa_oh: torch.Tensor, th: float):
+def compute_gap_frequency(msa_oh: torch.Tensor, th: float = 0.8):
     """Compute sequence-weighted gap frequencies for a one-hot MSA.
 
     Args:
@@ -15,7 +15,8 @@ def compute_gap_frequency(msa_oh: torch.Tensor, th: float):
             - N is the number of sequences.
             - L is the sequence length.
             - C is the number of possible characters, with index 0 representing gaps.
-        th (float): Sequence-identity threshold used to compute sequence weights.
+        th (float, optional): Sequence-identity threshold used to compute
+            sequence weights. Defaults to 0.8.
 
     Returns:
         torch.Tensor: A 1D tensor of shape (L,), representing the weighted gap
@@ -270,4 +271,3 @@ def compute_ppv_contacts(
     ppv = tp / top_k
 
     return {"ppv": float(ppv), "tp": float(tp), "fp": float(fp), "n_pred": float(top_k), "n_true": float(n_true)}
-

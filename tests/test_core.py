@@ -163,7 +163,7 @@ class CoreTests(unittest.TestCase):
             setup=make_setup(device="cpu"),
         )
 
-        gap_freq = msa.compute_gap_frequency(th=0.8)
+        gap_freq = msa.compute_gap_frequency()
 
         # The duplicate sequences each have weight 1/2, while the other
         # sequence has weight 1.  The first column is therefore weighted as
@@ -172,7 +172,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(torch.allclose(msa.weights, torch.tensor([0.5, 0.5, 1.0])))
         self.assertEqual(msa.Meff, 2.0)
 
-        onehot_gap_freq = compute_gap_frequency(msa.onehot(), th=0.8)
+        onehot_gap_freq = compute_gap_frequency(msa.onehot())
         self.assertTrue(torch.allclose(onehot_gap_freq, gap_freq))
 
     def test_remove_sequences_rejects_protein_with_wrong_alignment_length(self):

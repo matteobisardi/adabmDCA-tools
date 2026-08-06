@@ -23,7 +23,7 @@ msa = MultipleSequenceAlignment.from_path(
     setup=setup,
 )
 
-msa.compute_gap_frequency(th=0.8)
+msa.compute_gap_frequency()
 msa.compute_weights_cls()
 msa.summary()
 ```
