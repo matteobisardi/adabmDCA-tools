@@ -41,7 +41,44 @@ headers, sequences = import_unaligned_fasta("sequences.fasta")
 - `MultipleSequenceAlignment`: aligned FASTA input, filtering, sequence weights, gap statistics, and PCA.
 - `ProteinSequence`: aligned and unaligned protein sequences with position mapping.
 - `DeepMutationalScanning`: DMS analysis through `protein.dms`.
+- `SequencePath`: directed single-mutation paths between two aligned proteins,
+  with greedy, flat-energy-step, and mean-energy constructors.
+- `SequencePathFast`: the same path interface with precomputed single and
+  pair-mutation effects for faster Monte Carlo sampling.
 - FASTA and numerical helper functions.
+
+```python
+from adabmDCA_tools import SequencePath, SequencePathFast
+
+vim2 = "..."
+ndm1 = "..."
+
+path = SequencePath.flat(
+    vim2,
+    ndm1,
+    params,
+    beta=1.0,
+    steps=10_000,
+    seed=7,
+    keep_history=True,
+)
+print(path.mutations)        # 1-based directed mutation positions
+print(path.score_history)    # objective before and after every MC step
+path_msa = path.to_msa()     # VIM-2, every intermediate, and NDM-1
+path.write_to_file("vim2_to_ndm1_path.fasta")
+
+# Sample another path with the same settings.
+path.make_path()
+
+# Import an existing path from an ordered FASTA file.
+path = SequencePath.from_file("vim2_to_ndm1_path.fasta", params)
+
+# Use the same interface with faster flat and mean-energy sampling.
+fast_path = SequencePathFast.flat(vim2, ndm1, params, steps=10_000)
+```
+
+The two wildtypes can be aligned sequence strings, `ProteinSequence` objects,
+single-sequence FASTA paths, or vectors of encoded residues.
 
 ## Testing
 

@@ -9,6 +9,7 @@ from .metrics import (
     count_gaps,
     get_pairwise_seqid,
     inverse_one_hot,
+    minimum_hamming_distance,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "import_from_fasta_keep_order",
     "import_unaligned_fasta",
     "inverse_one_hot",
+    "minimum_hamming_distance",
 ]

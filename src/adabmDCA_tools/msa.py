@@ -82,7 +82,12 @@ class MultipleSequenceAlignment:
         self.q = self.setup["q"]
 
     def _resolve_device(self, device=None) -> torch.device:
-        return self.device if device is None else torch.device(device)
+        target = self.device if device is None else torch.device(device)
+        if target.type == "mps" and target.index is None:
+            return torch.device("mps:0")
+        if target.type == "cuda" and target.index is None and torch.cuda.is_available():
+            return torch.device("cuda", torch.cuda.current_device())
+        return target
 
     def to(self, device):
         """Set the default *temporary computation* device and return ``self``.

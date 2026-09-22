@@ -3,7 +3,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from adabmDCA.fasta import compute_weights
+from adabmDCA.fasta import compute_weights, encode_sequence
 from adabmDCA.utils import resample_sequences
 
 
@@ -55,6 +55,87 @@ def compute_seqID(a1: torch.Tensor, single_seq: torch.Tensor):
     seqID = (a1 * single_seq).sum(1) 
 
     return seqID
+
+
+def minimum_hamming_distance(
+    sequence,
+    msa: "MultipleSequenceAlignment",
+    device=None,
+) -> int:
+    """Return the minimum Hamming distance from one protein to an MSA.
+
+    The comparison uses temporary one-hot tensors on ``device``. If ``device``
+    is omitted, the device configured on ``msa`` is used.
+
+    Parameters
+    ----------
+    sequence : ProteinSequence, str, or vector-like
+        The aligned sequence to compare. A numeric vector must contain one
+        encoded alphabet index per alignment position.
+    msa : MultipleSequenceAlignment
+        The alignment to search.
+    device : str or torch.device, optional
+        Computation device, for example ``"cuda"`` or ``"mps"``.
+
+    Returns
+    -------
+    int
+        The smallest number of differing alignment positions.
+    """
+    from .msa import MultipleSequenceAlignment
+    from .protein import ProteinSequence
+
+    if not isinstance(msa, MultipleSequenceAlignment):
+        raise TypeError("msa must be a MultipleSequenceAlignment.")
+    if msa.M == 0:
+        raise ValueError("msa must contain at least one sequence.")
+
+    if isinstance(sequence, ProteinSequence):
+        if sequence.q != msa.q or sequence.tokens != msa.tokens:
+            raise ValueError("sequence and msa must use the same alphabet.")
+        sequence_encoded = torch.as_tensor(sequence.num)
+    elif isinstance(sequence, str):
+        invalid = set(sequence) - set(msa.tokens)
+        if invalid:
+            raise ValueError(
+                f"Unknown sequence token(s) {sorted(invalid)!r}; "
+                f"allowed tokens are {msa.tokens!r}."
+            )
+        sequence_encoded = torch.as_tensor(encode_sequence(sequence, msa.tokens))
+    elif isinstance(sequence, (list, tuple, np.ndarray, torch.Tensor)):
+        sequence_encoded = torch.as_tensor(sequence, device="cpu")
+        if sequence_encoded.dim() != 1:
+            raise ValueError("A numeric sequence must be a one-dimensional vector.")
+        if sequence_encoded.dtype == torch.bool or sequence_encoded.is_complex():
+            raise TypeError("A numeric sequence must contain integer alphabet indices.")
+        if sequence_encoded.is_floating_point() and not torch.equal(
+            sequence_encoded, sequence_encoded.round()
+        ):
+            raise ValueError("A numeric sequence must contain integer alphabet indices.")
+    else:
+        raise TypeError(
+            "sequence must be a ProteinSequence, an aligned string, "
+            "or a one-dimensional numeric vector."
+        )
+
+    sequence_encoded = sequence_encoded.to(dtype=torch.long)
+    if sequence_encoded.numel() != msa.L:
+        raise ValueError(
+            f"Alignment length mismatch: got L={sequence_encoded.numel()}, "
+            f"expected L={msa.L}."
+        )
+    if torch.any((sequence_encoded < 0) | (sequence_encoded >= msa.q)):
+        raise ValueError(f"Encoded sequence values must be between 0 and {msa.q - 1}.")
+
+    with torch.no_grad():
+        msa_onehot = msa.onehot(device=device)
+        sequence_onehot = torch.nn.functional.one_hot(
+            sequence_encoded.to(msa_onehot.device),
+            num_classes=msa.q,
+        ).to(dtype=msa_onehot.dtype)
+        distances = torch.any(msa_onehot != sequence_onehot, dim=2).sum(dim=1)
+        return int(distances.min().item())
+
 
 def get_pairwise_seqid(
     s1: torch.Tensor,

@@ -10,6 +10,7 @@ from adabmDCA_tools import (
     compute_gap_frequency,
     import_unaligned_fasta,
     make_setup,
+    minimum_hamming_distance,
 )
 from adabmDCA_tools.fasta import import_from_fasta_keep_order
 
@@ -46,6 +47,35 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(msa.Meff, 3.0)
         self.assertTrue(torch.equal(msa.gap_freq, torch.zeros(2)))
         self.assertEqual(msa.compute_pca(n_components=2).shape, (3, 2))
+
+    def test_resolve_device_normalizes_default_accelerator_index(self):
+        msa = MultipleSequenceAlignment(
+            ["sequence"],
+            [[1, 2, 3]],
+            setup=make_setup(device="cpu"),
+        )
+
+        self.assertEqual(msa._resolve_device("mps"), torch.device("mps:0"))
+
+    @unittest.skipUnless(
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+        "MPS is not available",
+    )
+    def test_mps_pca_projects_with_implicit_device(self):
+        msa = MultipleSequenceAlignment(
+            ["s1", "s2", "s3"],
+            [[1, 2, 3], [1, 2, 4], [1, 3, 4]],
+            setup=make_setup(device="mps"),
+        )
+        other = MultipleSequenceAlignment(
+            ["other"],
+            [[1, 2, 3]],
+            setup=make_setup(device="mps"),
+        )
+
+        self.assertEqual(msa.compute_pca(n_components=2).shape, (3, 2))
+        self.assertEqual(msa._V.device, torch.device("mps:0"))
+        self.assertEqual(msa.project(other, n_components=2).shape, (1, 2))
 
     def test_rna_fasta_round_trip(self):
         setup = make_setup(alphabet="rna", device="cpu")
@@ -160,6 +190,31 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(protein.aligned.get_string(), "AC-E")
         self.assertEqual(removed.tolist(), [0])
         self.assertEqual(msa.headers.tolist(), ["one_mutation", "distant"])
+
+    def test_minimum_hamming_distance(self):
+        setup = make_setup(device="cpu")
+        protein = ProteinSequence("AC-E", setup=setup)
+        msa = MultipleSequenceAlignment(
+            ["one_mutation", "distant"],
+            [[1, 2, 3, 5], [5, 6, 7, 8]],
+            setup=setup,
+        )
+
+        self.assertEqual(minimum_hamming_distance("AC-E", msa), 2)
+        self.assertEqual(minimum_hamming_distance([1, 2, 0, 4], msa), 2)
+        self.assertEqual(
+            minimum_hamming_distance(torch.tensor([1, 2, 0, 4]), msa),
+            2,
+        )
+        # Preserve support for the original public input type.
+        self.assertEqual(minimum_hamming_distance(protein, msa), 2)
+
+    def test_minimum_hamming_distance_validates_alignment_length(self):
+        setup = make_setup(device="cpu")
+        msa = MultipleSequenceAlignment(["sequence"], [[1, 2, 3, 4]], setup=setup)
+
+        with self.assertRaisesRegex(ValueError, "Alignment length mismatch"):
+            minimum_hamming_distance("ACD", msa)
 
     def test_gap_frequency_uses_sequence_weights(self):
         msa = MultipleSequenceAlignment(
