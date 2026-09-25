@@ -361,6 +361,70 @@ class SequencePathTests(unittest.TestCase):
             rebuilt_path.append("".join(rebuilt))
         self.assertEqual(self._path_sequences(sampled), rebuilt_path)
 
+    def test_path_distances_compare_mutation_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first_file = Path(directory) / "first.fasta"
+            second_file = Path(directory) / "second.fasta"
+            first_file.write_text(
+                ">start\nAAA\n>step1\nCAA\n>step2\nCCA\n>end\nCCC\n"
+            )
+            second_file.write_text(
+                ">start\nAAA\n>step1\nAAC\n>step2\nCAC\n>end\nCCC\n"
+            )
+            first = SequencePath.from_file(first_file, self._model(), setup=self.setup)
+            second = SequencePath.from_file(second_file, self._model(), setup=self.setup)
+
+        self.assertEqual(first.mutations, [1, 2, 3])
+        self.assertEqual(second.mutations, [3, 1, 2])
+        self.assertAlmostEqual(first.distance_k(second), 2 / 3)
+        np.testing.assert_array_equal(
+            first.distance_introduction(second),
+            np.array([-1, -1, 2]),
+        )
+        self.assertEqual(first.distance_k(first), 0.0)
+        np.testing.assert_array_equal(first.distance_introduction(first), [0, 0, 0])
+
+    def test_path_distances_require_the_same_mutations(self):
+        first = SequencePath.random(
+            self.wildtype1, self.wildtype2, self._model(), seed=1, setup=self.setup
+        )
+        other = SequencePath.random(
+            "AAA", "AAC", self._model(), seed=1,
+            setup=make_setup(alphabet="-AC", device="cpu"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "same mutation positions"):
+            first.distance_k(other)
+        with self.assertRaisesRegex(ValueError, "same mutation positions"):
+            first.distance_introduction(other)
+
+    def test_free_energy_path_returns_all_path_quantities(self):
+        slope = 0.75
+        path = SequencePath.flat(
+            self.wildtype1,
+            self.wildtype2,
+            self._model(),
+            steps=20,
+            seed=5,
+            setup=self.setup,
+            keep_history=True,
+            use_free_energy=True,
+            slope=slope,
+        )
+
+        self.assertEqual(len(path.energies), len(path.mutations) + 1)
+        self.assertEqual(len(path.entropies), len(path.mutations) + 1)
+        np.testing.assert_allclose(
+            path.free_energies,
+            path.energies - slope * path.entropies,
+        )
+        np.testing.assert_allclose(path.scores, path.free_energies)
+        self.assertAlmostEqual(
+            path.score_history[-1],
+            np.sum(np.diff(path.free_energies) ** 2),
+            places=5,
+        )
+
     def test_constructor_validates_endpoints_and_model(self):
         with self.assertRaisesRegex(ValueError, "same length"):
             SequencePath("AA", "CCC", self._model(), setup=self.setup)

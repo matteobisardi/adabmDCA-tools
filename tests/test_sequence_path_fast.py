@@ -90,6 +90,65 @@ class SequencePathFastTests(unittest.TestCase):
                 atol=1e-4,
             )
 
+    def test_fast_free_energy_paths_match_standard_paths(self):
+        for algorithm in ("flat", "mean"):
+            standard = SequencePath(
+                self.wildtype1,
+                self.wildtype2,
+                self.params,
+                algorithm=algorithm,
+                beta=0.7,
+                steps=40,
+                seed=11,
+                setup=self.setup,
+                keep_history=True,
+                use_free_energy=True,
+                slope=0.8,
+            )
+            fast = SequencePathFast(
+                self.wildtype1,
+                self.wildtype2,
+                self.params,
+                algorithm=algorithm,
+                beta=0.7,
+                steps=40,
+                seed=11,
+                setup=self.setup,
+                keep_history=True,
+                use_free_energy=True,
+                slope=0.8,
+            )
+
+            self.assertEqual(fast.mutations, standard.mutations)
+            np.testing.assert_allclose(fast.energies, standard.energies, atol=1e-5)
+            np.testing.assert_allclose(fast.entropies, standard.entropies, atol=1e-5)
+            np.testing.assert_allclose(
+                fast.free_energies, standard.free_energies, atol=1e-5
+            )
+            np.testing.assert_allclose(
+                fast.score_history, standard.score_history, atol=1e-4
+            )
+
+    def test_fast_path_inherits_mutation_distances(self):
+        path = SequencePathFast.random(
+            self.wildtype1,
+            self.wildtype2,
+            self.params,
+            seed=1,
+            setup=self.setup,
+        )
+        other = SequencePath.random(
+            self.wildtype1,
+            self.wildtype2,
+            self.params,
+            seed=2,
+            setup=self.setup,
+        )
+
+        self.assertGreaterEqual(path.distance_k(other), 0.0)
+        self.assertLessEqual(path.distance_k(other), 1.0)
+        self.assertEqual(len(path.distance_introduction(other)), 4)
+
     def test_history_continuation_and_restart(self):
         path = SequencePathFast.mean_energy(
             self.wildtype1,

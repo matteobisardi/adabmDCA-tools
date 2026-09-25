@@ -4,10 +4,13 @@ import gzip
 from pathlib import Path
 
 import torch
+from adabmDCA.statmech import compute_energy
 
 from adabmDCA_tools import (
     MultipleSequenceAlignment,
     ProteinSequence,
+    compute_conditional_logits,
+    compute_energy_entropy_slope,
     compute_gap_frequency,
     import_unaligned_fasta,
     load_params_flexible,
@@ -18,6 +21,46 @@ from adabmDCA_tools.fasta import import_from_fasta_keep_order
 
 
 class CoreTests(unittest.TestCase):
+    def test_msa_energy_entropy_and_free_energy(self):
+        setup = make_setup(alphabet="-AC", device="cpu")
+        sequences = torch.tensor([[0, 1, 2], [1, 2, 0], [2, 0, 1], [1, 1, 0]])
+        msa = MultipleSequenceAlignment(
+            [f"seq{i}" for i in range(len(sequences))],
+            sequences.numpy(),
+            setup=setup,
+        )
+        generator = torch.Generator().manual_seed(14)
+        params = {
+            "bias": torch.randn(3, 3, generator=generator),
+            "coupling_matrix": torch.randn(3, 3, 3, 3, generator=generator),
+        }
+
+        energies = msa.energy(params)
+        entropies = msa.entropy(params)
+        logits = compute_conditional_logits(sequences, params)
+        log_probabilities = torch.log_softmax(logits, dim=-1)
+        probabilities = torch.exp(log_probabilities)
+        local_entropies = -(probabilities * log_probabilities).sum(dim=-1)
+
+        self.assertEqual(energies.shape, (len(sequences),))
+        self.assertEqual(entropies.shape, (len(sequences),))
+        self.assertEqual(compute_conditional_logits(sequences, params).shape, (4, 3, 3))
+        self.assertTrue(torch.allclose(energies, compute_energy(msa.onehot(), params)))
+        self.assertTrue(torch.allclose(msa.entropy(params, pos=1), local_entropies[:, 1]))
+        self.assertTrue(torch.allclose(entropies, local_entropies.sum(dim=1)))
+
+        slope = 1.7
+        self.assertTrue(
+            torch.allclose(
+                msa.free_energy(params, slope=slope),
+                energies - slope * entropies,
+            )
+        )
+        self.assertAlmostEqual(
+            msa.compute_energy_entropy_slope(params),
+            compute_energy_entropy_slope(msa.enc, params),
+        )
+
     def test_load_params_flexible_reads_numeric_and_gzip_parameters(self):
         numeric_params = """J 0 1 0 1 2.5\nh 0 0 1.5\nh 0 1 -0.5\nh 1 0 0.25\nh 1 1 0.75\n"""
         with tempfile.TemporaryDirectory() as directory:
