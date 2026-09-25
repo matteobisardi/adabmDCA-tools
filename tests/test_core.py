@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import gzip
 from pathlib import Path
 
 import torch
@@ -9,6 +10,7 @@ from adabmDCA_tools import (
     ProteinSequence,
     compute_gap_frequency,
     import_unaligned_fasta,
+    load_params_flexible,
     make_setup,
     minimum_hamming_distance,
 )
@@ -16,6 +18,22 @@ from adabmDCA_tools.fasta import import_from_fasta_keep_order
 
 
 class CoreTests(unittest.TestCase):
+    def test_load_params_flexible_reads_numeric_and_gzip_parameters(self):
+        numeric_params = """J 0 1 0 1 2.5\nh 0 0 1.5\nh 0 1 -0.5\nh 1 0 0.25\nh 1 1 0.75\n"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "params.dat.gz"
+            with gzip.open(path, "wt") as file:
+                file.write(numeric_params)
+
+            params = load_params_flexible(path, tokens="-AC", device="cpu")
+
+        self.assertEqual(params["bias"].shape, (2, 3))
+        self.assertEqual(params["coupling_matrix"].shape, (2, 3, 2, 3))
+        self.assertEqual(params["bias"][0, 0].item(), 1.5)
+        self.assertEqual(params["bias"][0, 1].item(), -0.5)
+        self.assertEqual(params["coupling_matrix"][0, 0, 1, 1].item(), 2.5)
+        self.assertEqual(params["coupling_matrix"][1, 1, 0, 0].item(), 2.5)
+
     def test_default_setup(self):
         setup = make_setup(device="cpu")
         self.assertEqual(setup["tokens"], "-ACDEFGHIKLMNPQRSTVWY")

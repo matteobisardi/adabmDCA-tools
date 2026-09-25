@@ -12,6 +12,11 @@ from adabmDCA.utils import resample_sequences
 
 from .config import make_setup
 from .fasta import import_from_fasta_keep_order
+from .metrics import (
+    compute_conditional_entropies,
+    compute_conditional_logits,
+    compute_energy_entropy_slope,
+)
 
 
 class MultipleSequenceAlignment:
@@ -189,6 +194,61 @@ class MultipleSequenceAlignment:
 
     # ---------------- #
     # -- Statistics -- #
+    def energy(self, params):
+        """Return the Potts energy of every sequence in the alignment.
+
+        Parameters
+        ----------
+        params : dict
+            Potts parameters containing ``bias`` and ``coupling_matrix``.
+
+        Returns
+        -------
+        torch.Tensor
+            Energies with shape ``(M,)``, on the model parameter device.
+        """
+        bias = params["bias"]
+        target = bias.device
+        with torch.no_grad():
+            msa_oh = self.onehot(device=target).to(dtype=bias.dtype)
+            return compute_energy(msa_oh, params).reshape(-1)
+
+    def entropy(self, params, pos=None):
+        """Return conditional entropy for every sequence.
+
+        By default, return the sum of site-wise conditional entropies for
+        each sequence. If ``pos`` is provided, return only that site's
+        conditional entropy (using zero-based position indexing).
+
+        Parameters
+        ----------
+        params : dict
+            Potts parameters containing ``bias`` and ``coupling_matrix``.
+        pos : int, optional
+            Alignment position for which to return local conditional entropy.
+
+        Returns
+        -------
+        torch.Tensor
+            Entropies with shape ``(M,)``, on the model parameter device.
+        """
+        if pos is None:
+            return compute_conditional_entropies(self.enc, params)
+        if not isinstance(pos, (int, np.integer)):
+            raise TypeError("pos must be an integer alignment position.")
+        if pos < 0 or pos >= self.L:
+            raise IndexError(f"pos must be between 0 and {self.L - 1}.")
+
+        with torch.no_grad():
+            logits = compute_conditional_logits(self.enc, params)[:, pos, :]
+            log_probabilities = torch.log_softmax(logits, dim=-1)
+            probabilities = torch.exp(log_probabilities)
+            return -(probabilities * log_probabilities).sum(dim=-1)
+
+    def free_energy(self, params, slope=1):
+        """Return ``energy - slope * entropy`` for every sequence."""
+        return self.energy(params) - slope * self.entropy(params)
+
     def compute_weights_cls(self, th=0.8, device=None):
         """Compute weights from compact encodings and keep only the CPU result."""
         target = self._resolve_device(device)
@@ -312,6 +372,14 @@ class MultipleSequenceAlignment:
             + self.L * (self.L - 1) * q_minus_one**2 / 2
         )
         return float(self.Meff * chi_squared.item() / theta_potts)
+
+    def compute_energy_entropy_slope(self, params):
+        """Fit DCA energy as a linear function of conditional entropy.
+
+        Returns the slope from ``energy = intercept + slope * entropy`` over
+        all sequences in this alignment.
+        """
+        return compute_energy_entropy_slope(self.enc, params)
 
     def recompute_statistics(self, fast=False, th=0.8):
         """Refresh derived MSA statistics after changing its sequences.

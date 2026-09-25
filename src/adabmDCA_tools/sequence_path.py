@@ -10,6 +10,7 @@ from adabmDCA.statmech import compute_energy
 
 from .config import make_setup
 from .fasta import import_unaligned_fasta
+from .metrics import compute_conditional_entropies, compute_conditional_logits
 from .msa import MultipleSequenceAlignment
 from .protein import ProteinSequence
 
@@ -28,18 +29,27 @@ class SequencePath:
     params : dict
         DCA parameters containing ``bias`` and ``coupling_matrix``.
     algorithm : str, default="greedy"
-        Path algorithm: ``"greedy"``, ``"flat"``, or ``"mean_energy"``.
+        Path algorithm: ``"random"``, ``"greedy"``, ``"flat"``, or
+        ``"mean"``.
     beta : float, default=1
         Inverse temperature used by the Monte Carlo algorithms.
     steps : int, default=10000
         Number of Monte Carlo steps.
     seed : int, optional
-        Random seed for the Monte Carlo algorithms. If omitted, a random seed
-        is generated.
+        Random seed for random and Monte Carlo paths. If omitted, a random
+        seed is generated.
     setup : dict, optional
         Alphabet and device setup used by the sequence objects.
     keep_history : bool, default=False
-        If True, store the Monte Carlo objective after every sampling step.
+        If True, store the path objective after every Monte Carlo step in
+        ``score_history``.
+    use_free_energy : bool, default=False
+        If True, use ``energy - slope * conditional_entropy`` as the path score.
+    slope : float, default=1
+        Weight of the summed Potts conditional entropy in the free energy.
+
+    The selected path score is available as ``scores``. The returned path
+    always includes ``energies``, ``entropies``, and ``free_energies``.
     """
 
     def __init__(
@@ -53,15 +63,22 @@ class SequencePath:
         seed=None,
         setup=None,
         keep_history=False,
+        use_free_energy=False,
+        slope=1,
     ):
         # Path definition and sampling options
         self.setup = make_setup() if setup is None else setup
         self.params = params
-        self.algorithm = algorithm
+        self.algorithm = "mean" if algorithm == "mean_energy" else algorithm
         self.beta = beta
         self.steps = steps
         self.keep_history = keep_history
-        if seed is None and algorithm in ("flat", "mean_energy"):
+        self.use_free_energy = use_free_energy
+        self.slope = slope
+        self._reference_conditional_logits = None
+        self._conditional_effects = None
+        self._conditional_positions = None
+        if seed is None and self.algorithm in ("random", "flat", "mean"):
             seed = int(np.random.default_rng().integers(0, 2**32))
         self.seed = seed
         self._rng = np.random.default_rng(seed)
@@ -71,6 +88,9 @@ class SequencePath:
         self.wildtype2 = self._wildtype_to_string(wildtype2)
         self.mutations = []
         self.energies = None
+        self.entropies = None
+        self.free_energies = None
+        self.scores = None
         self.score_history = [] if keep_history else None
         self.msa = None
 
@@ -79,11 +99,11 @@ class SequencePath:
     # --------------------------- #
     # -- Generate and use path -- #
     def make_path(self, seed=None):
-        """Generate a path and update mutations, energies, and MSA.
+        """Generate a path and update mutations, scores, and MSA.
 
-        For a Monte Carlo algorithm, call without a seed to continue sampling
-        from the current path. Pass a seed to restart from a new random path.
-        A greedy path is deterministic and is not rebuilt.
+        A random path is redrawn on every call. A Monte Carlo path continues
+        sampling from its current order. Pass a seed to restart either path
+        reproducibly. A greedy path is deterministic and is not rebuilt.
         """
         path_exists = self.msa is not None
         if path_exists and self.algorithm == "greedy":
@@ -98,7 +118,7 @@ class SequencePath:
         different_positions = torch.where(start != end)[0].tolist()
 
         with torch.no_grad():
-            order, energies = self._run_algorithm(
+            order, scores = self._run_algorithm(
                 start,
                 end,
                 different_positions,
@@ -106,19 +126,63 @@ class SequencePath:
             )
 
         self.mutations = [position + 1 for position in order]
-        self.energies = energies.cpu().numpy()
         self.msa = self._build_msa()
+        encoded_path = torch.as_tensor(
+            self.msa.enc,
+            dtype=torch.long,
+            device=self.params["bias"].device,
+        )
+        with torch.no_grad():
+            self.energies = self._compute_energies(encoded_path).cpu().numpy()
+            self.entropies = self._compute_entropies(encoded_path).cpu().numpy()
+        self.free_energies = self.energies - self.slope * self.entropies
+        self.scores = (
+            self.free_energies.copy() if self.use_free_energy else self.energies.copy()
+        )
         return self
 
     @classmethod
-    def greedy(cls, wildtype1, wildtype2, params, setup=None):
-        """Create a greedy minimum-energy path."""
+    def greedy(
+        cls,
+        wildtype1,
+        wildtype2,
+        params,
+        setup=None,
+        use_free_energy=False,
+        slope=1,
+    ):
+        """Create a greedy path that minimizes the selected score at each step."""
         return cls(
             wildtype1,
             wildtype2,
             params,
             algorithm="greedy",
             setup=setup,
+            use_free_energy=use_free_energy,
+            slope=slope,
+        )
+
+    @classmethod
+    def random(
+        cls,
+        wildtype1,
+        wildtype2,
+        params,
+        seed=None,
+        setup=None,
+        use_free_energy=False,
+        slope=1,
+    ):
+        """Create an unoptimized path with a random mutation order."""
+        return cls(
+            wildtype1,
+            wildtype2,
+            params,
+            algorithm="random",
+            seed=seed,
+            setup=setup,
+            use_free_energy=use_free_energy,
+            slope=slope,
         )
 
     @classmethod
@@ -132,8 +196,10 @@ class SequencePath:
         seed=None,
         setup=None,
         keep_history=False,
+        use_free_energy=False,
+        slope=1,
     ):
-        """Create a path sampled with the flat-energy objective."""
+        """Sample a path that minimizes squared changes in the selected score."""
         return cls(
             wildtype1,
             wildtype2,
@@ -144,6 +210,37 @@ class SequencePath:
             seed=seed,
             keep_history=keep_history,
             setup=setup,
+            use_free_energy=use_free_energy,
+            slope=slope,
+        )
+
+    @classmethod
+    def mean(
+        cls,
+        wildtype1,
+        wildtype2,
+        params,
+        beta=1,
+        steps=10_000,
+        seed=None,
+        setup=None,
+        keep_history=False,
+        use_free_energy=False,
+        slope=1,
+    ):
+        """Create a path sampled to minimize the mean selected score."""
+        return cls(
+            wildtype1,
+            wildtype2,
+            params,
+            algorithm="mean",
+            beta=beta,
+            steps=steps,
+            seed=seed,
+            keep_history=keep_history,
+            setup=setup,
+            use_free_energy=use_free_energy,
+            slope=slope,
         )
 
     @classmethod
@@ -157,18 +254,21 @@ class SequencePath:
         seed=None,
         setup=None,
         keep_history=False,
+        use_free_energy=False,
+        slope=1,
     ):
-        """Create a path sampled with the mean-energy objective."""
-        return cls(
+        """Compatibility alias for :meth:`mean`."""
+        return cls.mean(
             wildtype1,
             wildtype2,
             params,
-            algorithm="mean_energy",
             beta=beta,
             steps=steps,
             seed=seed,
-            keep_history=keep_history,
             setup=setup,
+            keep_history=keep_history,
+            use_free_energy=use_free_energy,
+            slope=slope,
         )
 
     @classmethod
@@ -226,6 +326,8 @@ class SequencePath:
         sequence_path.algorithm = "imported"
         sequence_path.beta = None
         sequence_path.steps = None
+        sequence_path.use_free_energy = False
+        sequence_path.slope = 1
         sequence_path.keep_history = False
         sequence_path.seed = None
         sequence_path._rng = np.random.default_rng()
@@ -233,6 +335,9 @@ class SequencePath:
         sequence_path.wildtype2 = sequences[-1]
         sequence_path.mutations = mutations
         sequence_path.energies = None
+        sequence_path.entropies = None
+        sequence_path.free_energies = None
+        sequence_path.scores = None
         sequence_path.score_history = None
         sequence_path.msa = MultipleSequenceAlignment(headers, encoded, setup=setup)
 
@@ -249,6 +354,21 @@ class SequencePath:
                 .cpu()
                 .numpy()
             )
+            sequence_path.entropies = (
+                sequence_path._compute_entropies(
+                    sequence_path.msa.enc.to(
+                        device=params["bias"].device,
+                        dtype=torch.long,
+                    )
+                )
+                .cpu()
+                .numpy()
+            )
+            sequence_path.free_energies = (
+                sequence_path.energies
+                - sequence_path.slope * sequence_path.entropies
+            )
+            sequence_path.scores = sequence_path.energies.copy()
 
         return sequence_path
 
@@ -262,6 +382,59 @@ class SequencePath:
     def to_msa(self):
         """Return the path as a MultipleSequenceAlignment."""
         return self.msa
+
+    def distance_k(self, another_path):
+        """Return the Kendall distance between two mutation orders.
+
+        This is the fraction of mutation pairs whose relative order is
+        reversed between the paths. Both paths must contain the same mutation
+        positions; the result ranges from zero (same order) to one (reverse
+        order). Paths with fewer than two mutations have distance zero.
+        """
+        other_mutations = getattr(another_path, "mutations", None)
+        if other_mutations is None:
+            raise TypeError("another_path must be a SequencePath.")
+        if len(self.mutations) != len(other_mutations) or set(self.mutations) != set(
+            other_mutations
+        ):
+            raise ValueError("Both paths must contain the same mutation positions.")
+
+        other_order = {position: rank for rank, position in enumerate(other_mutations)}
+        other_ranks = [other_order[position] for position in self.mutations]
+        inversions = sum(
+            other_ranks[i] > other_ranks[j]
+            for i in range(len(other_ranks))
+            for j in range(i + 1, len(other_ranks))
+        )
+        n_pairs = len(other_ranks) * (len(other_ranks) - 1) // 2
+        return inversions / n_pairs if n_pairs else 0.0
+
+    def distance_introduction(self, another_path):
+        """Return per-mutation differences in introduction time.
+
+        For each mutation, the returned value is its 1-based introduction
+        step in this path minus its 1-based introduction step in
+        ``another_path``. Values are ordered by 1-based alignment position
+        and can be negative. Both paths must contain the same mutations.
+        """
+        other_mutations = getattr(another_path, "mutations", None)
+        if other_mutations is None:
+            raise TypeError("another_path must be a SequencePath.")
+        if len(self.mutations) != len(other_mutations) or set(self.mutations) != set(
+            other_mutations
+        ):
+            raise ValueError("Both paths must contain the same mutation positions.")
+
+        my_times = {
+            position: time for time, position in enumerate(self.mutations, start=1)
+        }
+        other_times = {
+            position: time for time, position in enumerate(other_mutations, start=1)
+        }
+        return np.asarray(
+            [my_times[position] - other_times[position] for position in sorted(my_times)],
+            dtype=int,
+        )
 
     def _build_msa(self):
         """Build the complete path as a MultipleSequenceAlignment."""
@@ -372,6 +545,8 @@ class SequencePath:
         initial_mutations=None,
     ):
         """Run the selected path algorithm."""
+        if self.algorithm == "random":
+            return self._random_path(start, end, different_positions)
         if self.algorithm == "greedy":
             return self._greedy_path(start, end, different_positions)
         if self.algorithm == "flat":
@@ -383,23 +558,34 @@ class SequencePath:
                 self._flat_path_score,
                 initial_mutations,
             )
-        if self.algorithm == "mean_energy":
+        if self.algorithm == "mean":
             return self._monte_carlo_path(
                 start,
                 end,
                 different_positions,
-                self._mean_energy_delta_score,
-                self._mean_energy_path_score,
+                self._mean_delta_score,
+                self._mean_path_score,
                 initial_mutations,
             )
 
-        raise ValueError("algorithm must be 'greedy', 'flat', or 'mean_energy'.")
+        raise ValueError("algorithm must be 'random', 'greedy', 'flat', or 'mean'.")
+
+    def _random_path(self, start, end, different_positions):
+        """Draw one uniformly random ordering of the directed mutations."""
+        order = self._rng.permutation(different_positions).tolist()
+        _, scores = self._build_path(start, end, order)
+        return order, scores
 
     def _greedy_path(self, start, end, different_positions):
-        # Begin from wildtype1 and calculate its full DCA energy once.
+        # Begin from wildtype1 and calculate its selected path score once.
         current = start.clone()
-        current_energy = self._compute_energies(current)[0]
-        energies = [current_energy]
+        if self.use_free_energy:
+            self._prepare_conditional_effects(start, end, different_positions)
+            current_logits = self._reference_conditional_logits.clone()
+            current_score = self._scores_from_logits(current, current_logits)[0]
+        else:
+            current_score = self._compute_energies(current)[0]
+        scores = [current_score]
         order = []
         remaining = different_positions.copy()
 
@@ -420,24 +606,35 @@ class SequencePath:
                 mutation_positions,
             ] = end[mutation_positions]
 
-            # Calculate the DCA energy change of all possible next mutations
-            # together, relative to the current sequence.
-            delta_energies = self._delta_energy(
-                current.expand_as(candidate_sequences),
-                candidate_sequences,
-                mutation_positions[:, None],
-            )
+            if self.use_free_energy:
+                effect_indices = torch.tensor(
+                    [different_positions.index(position) for position in remaining],
+                    device=current.device,
+                )
+                candidate_logits = (
+                    current_logits[None, :, :]
+                    + self._conditional_effects[effect_indices]
+                )
+                candidate_energies = self._compute_energies(candidate_sequences)
+                candidate_scores = candidate_energies - self.slope * (
+                    self._entropy_from_logits(candidate_logits)
+                )
+            else:
+                candidate_scores = self._compute_energies(candidate_sequences)
+            delta_scores = candidate_scores - current_score
 
-            # Select the mutation producing the lowest-energy intermediate.
-            best = torch.argmin(delta_energies).item()
+            # Select the mutation producing the lowest-score intermediate.
+            best = torch.argmin(delta_scores).item()
             position = remaining.pop(best)
             current = candidate_sequences[best]
-            current_energy = current_energy + delta_energies[best]
+            current_score = candidate_scores[best]
+            if self.use_free_energy:
+                current_logits = candidate_logits[best]
 
             order.append(position)
-            energies.append(current_energy)
+            scores.append(current_score)
 
-        return order, torch.stack(energies)
+        return order, torch.stack(scores)
 
     def _monte_carlo_path(
         self,
@@ -445,7 +642,7 @@ class SequencePath:
         end,
         different_positions,
         delta_score_function,
-        path_score_function,
+        score_function,
         initial_mutations=None,
     ):
         # Start a new chain from a random path. When make_path() is called on
@@ -454,15 +651,21 @@ class SequencePath:
             order = self._rng.permutation(different_positions).tolist()
         else:
             order = [position - 1 for position in initial_mutations]
-        path, energies = self._build_path(start, end, order)
+        path, scores = self._build_path(start, end, order)
+        path_logits = None
+        path_energies = None
+        if self.use_free_energy:
+            self._prepare_conditional_effects(start, end, different_positions)
+            path_logits = self._ordered_conditional_logits(order)
+            path_energies = self._compute_energies(path)
 
         if self.keep_history:
-            current_score = path_score_function(energies).item()
+            current_score = score_function(scores).item()
             if initial_mutations is None or self.score_history is None:
                 self.score_history = [current_score]
 
         if len(order) < 2:
-            return order, energies
+            return order, scores
 
         for _ in range(self.steps):
             # Select any two mutation times, not necessarily adjacent.
@@ -490,10 +693,10 @@ class SequencePath:
             new_path = torch.stack(new_path)
 
             # Corresponding old and proposed intermediates differ only at the
-            # two exchanged residue positions. Calculate all their energy
+            # two exchanged residue positions. Calculate all their scores
             # changes together without rescoring the complete sequences.
             old_path = path[left + 1 : right + 1]
-            delta_energies = self._delta_energy(
+            delta_energy = self._delta_energy(
                 old_path,
                 new_path,
                 torch.tensor(
@@ -501,13 +704,31 @@ class SequencePath:
                     device=path.device,
                 )[None, :].expand(len(new_path), -1),
             )
-            new_energies = energies[left + 1 : right + 1] + delta_energies
+            if self.use_free_energy:
+                mutation_to_effect = {
+                    position: index
+                    for index, position in enumerate(different_positions)
+                }
+                logits_change = (
+                    self._conditional_effects[mutation_to_effect[order[right]]]
+                    - self._conditional_effects[mutation_to_effect[order[left]]]
+                )
+                new_logits = path_logits[left + 1 : right + 1].clone()
+                if len(new_logits) > 1:
+                    new_logits[:-1] += logits_change
+                delta_entropies = self._entropy_from_logits(new_logits)
+                new_energies = (
+                    path_energies[left + 1 : right + 1] + delta_energy
+                )
+                new_scores = new_energies - self.slope * delta_entropies
+            else:
+                new_scores = scores[left + 1 : right + 1] + delta_energy
 
             # The sampler is independent of the path objective. The selected
             # score function evaluates only the part changed by this proposal.
             delta_score = delta_score_function(
-                energies,
-                new_energies,
+                scores,
+                new_scores,
                 left,
                 right,
             )
@@ -520,49 +741,52 @@ class SequencePath:
                 accept = self._rng.random() < np.exp(-self.beta * delta_score)
 
             if accept:
-                # Keep the proposed order, intermediate sequences, and their
-                # energies synchronized.
+                # Keep the proposed order, sequences, and scores synchronized.
                 order = new_order
                 path[left + 1 : right + 1] = new_path
-                energies[left + 1 : right + 1] = new_energies
+                scores[left + 1 : right + 1] = new_scores
+                if self.use_free_energy:
+                    path_energies[left + 1 : right + 1] = new_energies
+                    if right - left > 1:
+                        path_logits[left + 1 : right] += logits_change
                 if self.keep_history:
                     current_score += delta_score
 
             if self.keep_history:
                 self.score_history.append(current_score)
 
-        return order, energies
+        return order, scores
 
-    def _flat_path_score(self, energies):
-        """Sum of the squared energy jumps along the complete path."""
-        return torch.sum(torch.diff(energies) ** 2)
+    def _flat_path_score(self, scores):
+        """Sum of squared score changes along the complete path."""
+        return torch.sum(torch.diff(scores) ** 2)
 
-    def _flat_delta_score(self, energies, new_energies, left, right):
-        """Change in the squared energy jumps along the path."""
+    def _flat_delta_score(self, scores, new_scores, left, right):
+        """Change in the squared score changes along the path."""
         # Include the unchanged sequence immediately before and after the
         # rebuilt segment because the jumps at both boundaries also change.
-        old_window = energies[left : right + 2]
+        old_window = scores[left : right + 2]
         new_window = torch.cat(
             (
-                energies[left : left + 1],
-                new_energies,
-                energies[right + 1 : right + 2],
+                scores[left : left + 1],
+                new_scores,
+                scores[right + 1 : right + 2],
             )
         )
         return torch.sum(torch.diff(new_window) ** 2) - torch.sum(
             torch.diff(old_window) ** 2
         )
 
-    def _mean_energy_path_score(self, energies):
-        """Mean DCA energy of the complete path."""
-        return torch.mean(energies)
+    def _mean_path_score(self, scores):
+        """Mean selected score of every sequence along the path."""
+        return torch.mean(scores)
 
-    def _mean_energy_delta_score(self, energies, new_energies, left, right):
-        """Change in the mean DCA energy of the complete path."""
+    def _mean_delta_score(self, scores, new_scores, left, right):
+        """Change in the mean selected score after a proposed swap."""
         # Endpoints and all sequences outside the rebuilt segment are
         # unchanged, so they cancel when comparing the two path means.
-        old_energies = energies[left + 1 : right + 1]
-        return torch.sum(new_energies - old_energies) / len(energies)
+        old_scores = scores[left + 1 : right + 1]
+        return torch.sum(new_scores - old_scores) / len(scores)
 
     def _build_path(self, start, end, order):
         # Apply the ordered mutations one at a time, retaining both endpoints.
@@ -576,10 +800,16 @@ class SequencePath:
 
         path = torch.stack(path)
 
-        # This is the initial energy evaluation for a Monte Carlo run. Score
-        # the complete path in one batched call to adabmDCA.compute_energy().
-        energies = self._compute_energies(path)
-        return path, energies
+        # Score the complete path in one batch. Conditional logits along a
+        # mutation path are additive in its single-residue mutation effects.
+        if self.use_free_energy:
+            different_positions = torch.where(start != end)[0].tolist()
+            self._prepare_conditional_effects(start, end, different_positions)
+            logits = self._ordered_conditional_logits(order)
+            scores = self._scores_from_logits(path, logits)
+        else:
+            scores = self._compute_energies(path)
+        return path, scores
 
     # ------------------------- #
     # -- Energy calculations -- #
@@ -597,6 +827,76 @@ class SequencePath:
         ).to(self.params["bias"].dtype)
 
         return compute_energy(sequences_oh, self.params)
+
+    def _prepare_conditional_effects(self, start, end, different_positions):
+        """Precompute conditional-logit changes for each allowed mutation."""
+        if self._conditional_effects is not None:
+            return
+
+        self._conditional_positions = different_positions.copy()
+        self._reference_conditional_logits = compute_conditional_logits(
+            start,
+            self.params,
+        )[0]
+        coupling = self.params["coupling_matrix"]
+        symmetric_coupling = 0.5 * (
+            coupling + coupling.permute(2, 3, 0, 1)
+        )
+
+        effects = []
+        for position in different_positions:
+            old_aa = start[position]
+            new_aa = end[position]
+            effect = (
+                symmetric_coupling[:, :, position, new_aa]
+                - symmetric_coupling[:, :, position, old_aa]
+            ).clone()
+            effect[position] = 0
+            effects.append(effect)
+
+        if effects:
+            self._conditional_effects = torch.stack(effects)
+        else:
+            self._conditional_effects = torch.empty(
+                (0, start.shape[0], self.params["bias"].shape[1]),
+                dtype=self.params["bias"].dtype,
+                device=start.device,
+            )
+
+    def _ordered_conditional_logits(self, order):
+        """Build all path logits from the reference plus mutation effects."""
+        if not order:
+            return self._reference_conditional_logits[None, :, :]
+        position_to_effect = {
+            position: index
+            for index, position in enumerate(self._conditional_positions)
+        }
+        indices = torch.tensor(
+            [position_to_effect[position] for position in order],
+            dtype=torch.long,
+            device=self._conditional_effects.device,
+        )
+        cumulative_effects = torch.cumsum(self._conditional_effects[indices], dim=0)
+        return torch.cat(
+            (
+                self._reference_conditional_logits[None, :, :],
+                self._reference_conditional_logits[None, :, :] + cumulative_effects,
+            ),
+            dim=0,
+        )
+
+    def _entropy_from_logits(self, logits):
+        log_probabilities = torch.log_softmax(logits, dim=-1)
+        probabilities = torch.exp(log_probabilities)
+        return -(probabilities * log_probabilities).sum(dim=-1).sum(dim=-1)
+
+    def _scores_from_logits(self, sequences, logits):
+        energies = self._compute_energies(sequences)
+        return energies - self.slope * self._entropy_from_logits(logits)
+
+    def _compute_entropies(self, sequences):
+        """Sum H(S_i | S_-i) from the Potts conditional distributions."""
+        return compute_conditional_entropies(sequences, self.params)
 
     def _delta_energy(self, old_sequences, new_sequences, changed_positions):
         """Compute exact energy changes from only the affected couplings.
@@ -649,8 +949,8 @@ class SequencePathFast(SequencePath):
     """SequencePath using precomputed single and pair mutation effects.
 
     The public interface is the same as :class:`SequencePath`. For ``flat``
-    and ``mean_energy`` paths, DCA terms are evaluated once before sampling.
-    Monte Carlo then operates only on the mutation order and its energy steps.
+    and ``mean`` paths, DCA terms are evaluated once before sampling.
+    Monte Carlo then operates only on the mutation order and score increments.
     """
 
     def __init__(
@@ -664,6 +964,8 @@ class SequencePathFast(SequencePath):
         seed=None,
         setup=None,
         keep_history=False,
+        use_free_energy=False,
+        slope=1,
     ):
         # Exact binary representation of the DCA energy landscape. These
         # attributes remain None for a greedy or imported path.
@@ -682,6 +984,8 @@ class SequencePathFast(SequencePath):
             seed=seed,
             setup=setup,
             keep_history=keep_history,
+            use_free_energy=use_free_energy,
+            slope=slope,
         )
 
     @classmethod
@@ -701,7 +1005,23 @@ class SequencePathFast(SequencePath):
         different_positions,
         initial_mutations=None,
     ):
-        """Run greedy normally or use the precomputed Monte Carlo sampler."""
+        """Run random or greedy paths normally, or use the fast sampler."""
+        if self.algorithm == "random":
+            return super()._run_algorithm(
+                start,
+                end,
+                different_positions,
+                initial_mutations,
+            )
+        if self.use_free_energy:
+            # Conditional entropy depends on every residue in each sequence,
+            # so the energy-only precomputed effects do not apply.
+            return super()._run_algorithm(
+                start,
+                end,
+                different_positions,
+                initial_mutations,
+            )
         if self.algorithm == "greedy":
             return self._greedy_path(start, end, different_positions)
         if self.algorithm == "flat":
@@ -713,7 +1033,7 @@ class SequencePathFast(SequencePath):
                 self._flat_step_score,
                 initial_mutations,
             )
-        if self.algorithm == "mean_energy":
+        if self.algorithm == "mean":
             return self._fast_monte_carlo_path(
                 start,
                 end,
@@ -723,7 +1043,7 @@ class SequencePathFast(SequencePath):
                 initial_mutations,
             )
 
-        raise ValueError("algorithm must be 'greedy', 'flat', or 'mean_energy'.")
+        raise ValueError("algorithm must be 'random', 'greedy', 'flat', or 'mean'.")
 
     def _prepare_effects(self, start, end, different_positions):
         """Precompute the exact energy effect of every mutation pair."""
@@ -807,7 +1127,7 @@ class SequencePathFast(SequencePath):
         end,
         different_positions,
         delta_score_function,
-        path_score_function,
+        score_function,
         initial_mutations=None,
     ):
         self._prepare_effects(start, end, different_positions)
@@ -826,10 +1146,10 @@ class SequencePathFast(SequencePath):
                 for position in initial_mutations
             ]
 
-        energy_steps = self._ordered_energy_steps(order)
+        score_steps = self._ordered_score_steps(order)
 
         if self.keep_history:
-            current_score = path_score_function(energy_steps).item()
+            current_score = score_function(score_steps).item()
             if initial_mutations is None or self.score_history is None:
                 self.score_history = [current_score]
 
@@ -842,35 +1162,35 @@ class SequencePathFast(SequencePath):
                 mutation_right = order[right]
                 middle = torch.tensor(order[left + 1 : right], dtype=torch.long)
 
-                # Swapping two mutation times changes only the energy steps in
+                # Swapping two mutation times changes only the score steps in
                 # this interval. Update them directly from the pair effects.
-                new_energy_steps = energy_steps[left : right + 1].clone()
-                new_energy_steps[0] = energy_steps[right] - self.pair_effects[
+                new_score_steps = score_steps[left : right + 1].clone()
+                new_score_steps[0] = score_steps[right] - self.pair_effects[
                     mutation_right,
                     mutation_left,
                 ]
-                new_energy_steps[-1] = energy_steps[left] + self.pair_effects[
+                new_score_steps[-1] = score_steps[left] + self.pair_effects[
                     mutation_left,
                     mutation_right,
                 ]
 
                 if len(middle) > 0:
-                    new_energy_steps[0] -= self.pair_effects[
+                    new_score_steps[0] -= self.pair_effects[
                         mutation_right,
                         middle,
                     ].sum()
-                    new_energy_steps[-1] += self.pair_effects[
+                    new_score_steps[-1] += self.pair_effects[
                         mutation_left,
                         middle,
                     ].sum()
-                    new_energy_steps[1:-1] += (
+                    new_score_steps[1:-1] += (
                         self.pair_effects[middle, mutation_right]
                         - self.pair_effects[middle, mutation_left]
                     )
 
                 delta_score = delta_score_function(
-                    energy_steps,
-                    new_energy_steps,
+                    score_steps,
+                    new_score_steps,
                     left,
                     right,
                 ).item()
@@ -883,23 +1203,23 @@ class SequencePathFast(SequencePath):
 
                 if accept:
                     order[left], order[right] = order[right], order[left]
-                    energy_steps[left : right + 1] = new_energy_steps
+                    score_steps[left : right + 1] = new_score_steps
                     if self.keep_history:
                         current_score += delta_score
 
                 if self.keep_history:
                     self.score_history.append(current_score)
 
-        energies = torch.cat(
+        scores = torch.cat(
             (
                 self.reference_energy[None],
-                self.reference_energy + torch.cumsum(energy_steps, dim=0),
+                self.reference_energy + torch.cumsum(score_steps, dim=0),
             )
         )
-        return [different_positions[index] for index in order], energies
+        return [different_positions[index] for index in order], scores
 
-    def _ordered_energy_steps(self, order):
-        """Calculate the energy added at each mutation time."""
+    def _ordered_score_steps(self, order):
+        """Calculate the score change at each mutation time."""
         if len(order) == 0:
             return self.single_effects.clone()
 
@@ -913,44 +1233,44 @@ class SequencePathFast(SequencePath):
             diagonal=-1,
         ).sum(dim=1)
 
-    def _flat_step_score(self, energy_steps):
-        """Flat-path objective from mutation energy increments."""
-        return torch.sum(energy_steps**2)
+    def _flat_step_score(self, score_steps):
+        """Flat-path objective from score increments."""
+        return torch.sum(score_steps**2)
 
     def _flat_step_delta_score(
         self,
-        energy_steps,
-        new_energy_steps,
+        score_steps,
+        new_score_steps,
         left,
         right,
     ):
         """Change in the flat-path objective after a proposed swap."""
-        return torch.sum(new_energy_steps**2) - torch.sum(
-            energy_steps[left : right + 1] ** 2
+        return torch.sum(new_score_steps**2) - torch.sum(
+            score_steps[left : right + 1] ** 2
         )
 
-    def _mean_step_score(self, energy_steps):
-        """Mean energy of every sequence along the path."""
+    def _mean_step_score(self, score_steps):
+        """Mean selected score of every sequence along the path."""
         return torch.mean(
             torch.cat(
                 (
                     self.reference_energy[None],
-                    self.reference_energy + torch.cumsum(energy_steps, dim=0),
+                    self.reference_energy + torch.cumsum(score_steps, dim=0),
                 )
             )
         )
 
     def _mean_step_delta_score(
         self,
-        energy_steps,
-        new_energy_steps,
+        score_steps,
+        new_score_steps,
         left,
         right,
     ):
-        """Change in mean path energy after a proposed swap."""
+        """Change in mean path score after a proposed swap."""
         changed_steps = (
-            new_energy_steps - energy_steps[left : right + 1]
+            new_score_steps - score_steps[left : right + 1]
         )
         return torch.sum(torch.cumsum(changed_steps, dim=0)) / (
-            len(energy_steps) + 1
+            len(score_steps) + 1
         )

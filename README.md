@@ -42,7 +42,7 @@ headers, sequences = import_unaligned_fasta("sequences.fasta")
 - `ProteinSequence`: aligned and unaligned protein sequences with position mapping.
 - `DeepMutationalScanning`: DMS analysis through `protein.dms`.
 - `SequencePath`: directed single-mutation paths between two aligned proteins,
-  with greedy, flat-energy-step, and mean-energy constructors.
+  with random, greedy, flat, and mean constructors.
 - `SequencePathFast`: the same path interface with precomputed single and
   pair-mutation effects for faster Monte Carlo sampling.
 - FASTA and numerical helper functions.
@@ -67,13 +67,16 @@ print(path.score_history)    # objective before and after every MC step
 path_msa = path.to_msa()     # VIM-2, every intermediate, and NDM-1
 path.write_to_file("vim2_to_ndm1_path.fasta")
 
+# Draw an unoptimized uniformly random mutation order.
+random_path = SequencePath.random(vim2, ndm1, params, seed=7)
+
 # Sample another path with the same settings.
 path.make_path()
 
 # Import an existing path from an ordered FASTA file.
 path = SequencePath.from_file("vim2_to_ndm1_path.fasta", params)
 
-# Use the same interface with faster flat and mean-energy sampling.
+# Use the same interface with faster flat and mean sampling.
 fast_path = SequencePathFast.flat(vim2, ndm1, params, steps=10_000)
 ```
 

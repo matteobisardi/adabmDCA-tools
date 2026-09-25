@@ -4,7 +4,105 @@ import numpy as np
 import torch
 
 from adabmDCA.fasta import compute_weights, encode_sequence
+from adabmDCA.functional import one_hot
+from adabmDCA.statmech import compute_energy
 from adabmDCA.utils import resample_sequences
+
+
+def compute_conditional_entropies(sequences: torch.Tensor, params: dict) -> torch.Tensor:
+    """Return summed Potts conditional entropies for encoded sequences.
+
+    Each value is the sum over alignment positions of
+    ``H(S_i | S_-i)`` in the Potts model specified by ``params``.
+    """
+    if sequences.dim() == 1:
+        sequences = sequences.unsqueeze(0)
+
+    bias = params["bias"]
+    coupling = params["coupling_matrix"]
+    q = bias.shape[1]
+    sequences = sequences.to(device=bias.device, dtype=torch.long)
+    sequence_oh = one_hot(sequences, num_classes=q).to(dtype=bias.dtype)
+
+    # Compute the conditional logits directly here so this public helper does
+    # not depend on another module global at call time (useful with autoreload).
+    symmetric_coupling = 0.5 * (
+        coupling + coupling.permute(2, 3, 0, 1)
+    )
+    symmetric_coupling = symmetric_coupling.clone()
+    positions = torch.arange(sequences.shape[1], device=sequences.device)
+    symmetric_coupling[positions, :, positions, :] = 0
+    context_score = torch.einsum(
+        "iajb,njb->nia",
+        symmetric_coupling,
+        sequence_oh,
+    )
+    diagonal = coupling[positions, :, positions, :]
+    amino_acids = torch.arange(q, device=sequences.device)
+    diagonal_score = diagonal[:, amino_acids, amino_acids]
+    logits = bias[None, :, :] + context_score + 0.5 * diagonal_score
+    log_probabilities = torch.log_softmax(logits, dim=-1)
+    probabilities = torch.exp(log_probabilities)
+    return -(probabilities * log_probabilities).sum(dim=-1).sum(dim=-1)
+
+
+def compute_conditional_logits(sequences: torch.Tensor, params: dict) -> torch.Tensor:
+    """Return Potts conditional logits for each site and sequence context."""
+    if sequences.dim() == 1:
+        sequences = sequences.unsqueeze(0)
+
+    bias = params["bias"]
+    coupling = params["coupling_matrix"]
+    q = bias.shape[1]
+    sequences = sequences.to(device=bias.device, dtype=torch.long)
+    sequence_oh = one_hot(sequences, num_classes=q).to(dtype=bias.dtype)
+
+    symmetric_coupling = 0.5 * (
+        coupling + coupling.permute(2, 3, 0, 1)
+    )
+    symmetric_coupling = symmetric_coupling.clone()
+    positions = torch.arange(sequences.shape[1], device=sequences.device)
+    symmetric_coupling[positions, :, positions, :] = 0
+    context_score = torch.einsum(
+        "iajb,njb->nia",
+        symmetric_coupling,
+        sequence_oh,
+    )
+
+    diagonal = coupling[positions, :, positions, :]
+    amino_acids = torch.arange(q, device=sequences.device)
+    diagonal_score = diagonal[:, amino_acids, amino_acids]
+    return bias[None, :, :] + context_score + 0.5 * diagonal_score
+
+
+def compute_energy_entropy_slope(sequences: torch.Tensor, params: dict) -> float:
+    """Fit DCA energy as a linear function of conditional entropy.
+
+    Parameters
+    ----------
+    sequences : torch.Tensor
+        Encoded sequences with shape ``(M, L)``.
+    params : dict
+        adabmDCA Potts parameters containing ``bias`` and ``coupling_matrix``.
+
+    Returns
+    -------
+    float
+        Slope from ``energy = intercept + slope * entropy``.
+    """
+    bias = params["bias"]
+    sequences = sequences.to(device=bias.device, dtype=torch.long)
+    sequence_oh = one_hot(sequences, num_classes=bias.shape[1]).to(bias.dtype)
+
+    with torch.no_grad():
+        energies = compute_energy(sequence_oh, params).reshape(-1)
+        entropies = compute_conditional_entropies(sequences, params)
+        centered_entropies = entropies - entropies.mean()
+        centered_energies = energies - energies.mean()
+        slope = torch.sum(centered_entropies * centered_energies) / torch.sum(
+            centered_entropies**2
+        )
+    return float(slope.item())
 
 
 def compute_gap_frequency(msa_oh: torch.Tensor, th: float = 0.8):
