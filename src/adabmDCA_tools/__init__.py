@@ -10,13 +10,14 @@ from .metrics import (
 )
 from .msa import MultipleSequenceAlignment
 from .protein import ProteinSequence
-from .sequence_path import SequencePath, SequencePathFast
+from .sequence_path import SequencePath, SequencePathFast, encode_sequences_on_path
 
 __all__ = [
     "MultipleSequenceAlignment",
     "ProteinSequence",
     "SequencePath",
     "SequencePathFast",
+    "encode_sequences_on_path",
     "make_setup",
     "compute_conditional_logits",
     "compute_energy_entropy_slope",

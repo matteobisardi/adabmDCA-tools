@@ -28,6 +28,24 @@ msa.compute_weights_cls()
 msa.summary()
 ```
 
+By default, `MultipleSequenceAlignment.from_path` removes a sequence if it
+contains a character outside the configured alphabet. To keep that sequence
+and replace each unrecognized character with a gap, use:
+
+```python
+msa = MultipleSequenceAlignment.from_path(
+    "alignment.fasta",
+    setup=setup,
+    unknown_token_policy="replace_with_gap",
+)
+```
+
+This option requires `-` in the alphabet. Duplicate removal, when requested,
+is applied after the replacements. If a sequence is exactly one column longer
+than the usual alignment and ends in a translation stop marker `*`, that extra
+terminal marker is removed before encoding. Other length mismatches raise an
+error naming the affected records.
+
 For unaligned FASTA files:
 
 ```python

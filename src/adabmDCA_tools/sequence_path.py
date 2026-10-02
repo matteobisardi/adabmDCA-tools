@@ -15,6 +15,99 @@ from .msa import MultipleSequenceAlignment
 from .protein import ProteinSequence
 
 
+def encode_sequences_on_path(wildtype1, wildtype2, sequences, setup=None):
+    """Encode sequences as binary states along the path from ``wildtype1`` to ``wildtype2``.
+
+    Only alignment positions where the wildtypes differ are represented. Each
+    row of the returned array corresponds to an item in ``sequences``, in input
+    order. At each represented position, 0 is the residue in
+    ``wildtype1`` and 1 is the residue in ``wildtype2``.
+
+    Inputs can be aligned strings, :class:`ProteinSequence` objects, or
+    one-dimensional vectors of alphabet indices. A supplied sequence must
+    have either the wildtype1 or wildtype2 residue at every differing
+    position; a third residue cannot be represented by this binary encoding.
+
+    Parameters
+    ----------
+    wildtype1, wildtype2 : str, ProteinSequence, or vector-like
+        Aligned start and end sequences.
+    sequences : iterable
+        Other aligned sequences to encode.
+    setup : dict, optional
+        Alphabet setup for encoded vectors and sequence validation. If omitted,
+        the setup from ``wildtype1`` is used when it is a ProteinSequence;
+        otherwise the default protein setup is used.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer array with shape ``(len(sequences), n_mutations)``.
+    """
+    if setup is None:
+        setup = (
+            wildtype1.setup
+            if isinstance(wildtype1, ProteinSequence)
+            else make_setup()
+        )
+    tokens = setup["tokens"]
+
+    def as_array(sequence, label):
+        if isinstance(sequence, ProteinSequence):
+            if sequence.tokens != tokens:
+                raise ValueError(f"{label} and setup must use the same alphabet.")
+            encoded = np.asarray(sequence.num, dtype=int)
+        elif isinstance(sequence, str):
+            invalid = set(sequence) - set(tokens)
+            if invalid:
+                raise ValueError(
+                    f"Unknown token(s) in {label}: {sorted(invalid)!r}; "
+                    f"allowed tokens are {tokens!r}."
+                )
+            encoded = np.asarray(encode_sequence(sequence, tokens), dtype=int)
+        elif isinstance(sequence, (list, tuple, np.ndarray, torch.Tensor)):
+            values = torch.as_tensor(sequence).detach().cpu()
+            if values.ndim != 1:
+                raise ValueError(f"{label} must be a one-dimensional sequence.")
+            if values.dtype == torch.bool or values.is_complex():
+                raise TypeError(f"{label} must contain integer alphabet indices.")
+            if values.is_floating_point() and not torch.equal(values, values.round()):
+                raise ValueError(f"{label} must contain integer alphabet indices.")
+            encoded = values.long().numpy()
+            if np.any(encoded < 0) or np.any(encoded >= len(tokens)):
+                raise ValueError(f"{label} contains an unknown alphabet index.")
+        else:
+            raise TypeError(
+                f"{label} must be an aligned string, ProteinSequence, or encoded vector."
+            )
+        return encoded
+
+    start = as_array(wildtype1, "wildtype1")
+    end = as_array(wildtype2, "wildtype2")
+    if start.ndim != 1 or end.ndim != 1 or len(start) != len(end):
+        raise ValueError("The two aligned wildtypes must have the same length.")
+
+    positions = np.flatnonzero(start != end)
+    sequences = list(sequences)
+    result = np.zeros((len(sequences), len(positions)), dtype=np.int8)
+    for row, sequence in enumerate(sequences):
+        encoded = as_array(sequence, f"sequences[{row}]")
+        if len(encoded) != len(start):
+            raise ValueError(
+                "Every sequence must have the same aligned length as the wildtypes."
+            )
+        at_positions = encoded[positions]
+        valid = (at_positions == start[positions]) | (at_positions == end[positions])
+        if not np.all(valid):
+            bad_position = int(positions[np.flatnonzero(~valid)[0]]) + 1
+            raise ValueError(
+                f"sequences[{row}] has a third residue at differing position "
+                f"{bad_position}; expected the wildtype1 or wildtype2 residue."
+            )
+        result[row] = (at_positions == end[positions]).astype(np.int8)
+    return result
+
+
 class SequencePath:
     """Directed mutational path between two aligned protein sequences.
 
@@ -382,6 +475,19 @@ class SequencePath:
     def to_msa(self):
         """Return the path as a MultipleSequenceAlignment."""
         return self.msa
+
+    def to_binary(self):
+        """Return the stored path as binary states relative to its wildtypes.
+
+        Rows follow the path order stored in ``self.msa``, including both
+        endpoints. Columns correspond to positions where the wildtypes differ.
+        """
+        return encode_sequences_on_path(
+            self.wildtype1,
+            self.wildtype2,
+            self.msa.enc,
+            setup=self.setup,
+        )
 
     def distance_k(self, another_path):
         """Return the Kendall distance between two mutation orders.

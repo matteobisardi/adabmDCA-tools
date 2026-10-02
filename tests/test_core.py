@@ -151,6 +151,41 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(sequences.tolist(), ["ACGU"])
 
+    def test_msa_unknown_tokens_can_be_replaced_with_gaps(self):
+        setup = make_setup(alphabet="-AC", device="cpu")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "alignment.fasta"
+            path.write_text(">first\nACX\n>second\nA-C\n>third\nAC?\n")
+
+            default_msa = MultipleSequenceAlignment.from_path(path, setup=setup)
+            repaired_msa = MultipleSequenceAlignment.from_path(
+                path, setup=setup, unknown_token_policy="replace_with_gap"
+            )
+            deduplicated_msa = MultipleSequenceAlignment.from_path(
+                path, setup=setup, remove_duplicates=True,
+                unknown_token_policy="replace_with_gap",
+            )
+
+        self.assertEqual(default_msa.headers.tolist(), ["second"])
+        self.assertEqual(repaired_msa.headers.tolist(), ["first", "second", "third"])
+        self.assertEqual(repaired_msa.seqs.tolist(), [[1, 2, 0], [1, 0, 2], [1, 2, 0]])
+        self.assertEqual(deduplicated_msa.headers.tolist(), ["first", "second"])
+
+    def test_msa_repair_removes_extra_terminal_stop_marker(self):
+        setup = make_setup(alphabet="-AC", device="cpu")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "alignment.fasta"
+            path.write_text(">first\nAC-\n>second\nA?C\n>third\nAC-*\n")
+
+            repaired = MultipleSequenceAlignment.from_path(
+                path, setup=setup, unknown_token_policy="replace_with_gap"
+            )
+            default = MultipleSequenceAlignment.from_path(path, setup=setup)
+
+        self.assertEqual(repaired.headers.tolist(), ["first", "second", "third"])
+        self.assertEqual(repaired.seqs.tolist(), [[1, 2, 0], [1, 0, 2], [1, 2, 0]])
+        self.assertEqual(default.headers.tolist(), ["first"])
+
     def test_import_unaligned_fasta_preserves_duplicates_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sequences.fasta"

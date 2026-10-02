@@ -12,6 +12,7 @@ license = { text = "Proprietary" }
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
+  "biopython",
   "torch",
   "pandas",
   "matplotlib",

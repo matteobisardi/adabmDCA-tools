@@ -165,7 +165,16 @@ class MultipleSequenceAlignment:
     # ---------------- #
     # -- Import MSA -- #
     @classmethod
-    def from_path(cls, path, setup=None, remove_duplicates=False):
+    def from_path(
+        cls, path, setup=None, remove_duplicates=False,
+        unknown_token_policy="remove",
+    ):
+        """Read an aligned FASTA file, removing unknown-token sequences by default.
+
+        Set ``unknown_token_policy="replace_with_gap"`` to retain a sequence
+        and replace each character outside the alphabet with ``-``. The setup
+        alphabet must contain the gap token in that mode.
+        """
         if setup is None:
             setup = make_setup()
         headers, seqs = import_from_fasta_keep_order(
@@ -173,6 +182,7 @@ class MultipleSequenceAlignment:
             setup["tokens"],
             filter_sequences=True,
             remove_duplicates=remove_duplicates,
+            unknown_token_policy=unknown_token_policy,
         )
         return cls(headers, seqs, setup)
 
