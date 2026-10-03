@@ -4,6 +4,7 @@ import gzip
 from pathlib import Path
 
 import torch
+import numpy as np
 from adabmDCA.statmech import compute_energy
 
 from adabmDCA_tools import (
@@ -21,6 +22,42 @@ from adabmDCA_tools.fasta import import_from_fasta_keep_order
 
 
 class CoreTests(unittest.TestCase):
+    def test_msa_hamming_accepts_text_numeric_and_onehot(self):
+        msa = MultipleSequenceAlignment(
+            ["exact", "one_change", "two_changes"],
+            [[0, 1, 2], [0, 2, 2], [2, 2, 2]],
+            setup=make_setup(alphabet="-AC", device="cpu"),
+        )
+        expected = [0, 1, 2]
+        np.testing.assert_array_equal(msa.hamming("-AC"), expected)
+        np.testing.assert_array_equal(msa.hamming(np.array([0, 1, 2])), expected)
+        np.testing.assert_array_equal(msa.hamming(torch.tensor([0, 1, 2])), expected)
+        onehot = torch.nn.functional.one_hot(torch.tensor([0, 1, 2]), num_classes=3)
+        np.testing.assert_array_equal(msa.hamming(onehot), expected)
+        np.testing.assert_array_equal(msa.hamming(onehot.numpy()), expected)
+        with self.assertRaises(ValueError):
+            msa.hamming("-A")
+        with self.assertRaises(ValueError):
+            msa.hamming("-AX")
+        with self.assertRaises(ValueError):
+            msa.hamming(np.array([0, 1, 3]))
+
+    def test_msa_index_by_position_or_header(self):
+        msa = MultipleSequenceAlignment(
+            ["first", "repeated", "repeated"],
+            [[0, 1], [1, 2], [2, 0]],
+            setup=make_setup(alphabet="-AC", device="cpu"),
+        )
+
+        self.assertEqual(msa[0][0], "first")
+        self.assertEqual(msa[0][1].tolist(), [0, 1])
+        self.assertEqual(msa[-1][0], "repeated")
+        self.assertEqual(msa[-1][1].tolist(), [2, 0])
+        self.assertEqual(msa["first"].tolist(), [0, 1])
+        self.assertEqual(msa["repeated"].tolist(), [[1, 2], [2, 0]])
+        with self.assertRaises(KeyError):
+            msa["missing"]
+
     def test_msa_energy_entropy_and_free_energy(self):
         setup = make_setup(alphabet="-AC", device="cpu")
         sequences = torch.tensor([[0, 1, 2], [1, 2, 0], [2, 0, 1], [1, 1, 0]])

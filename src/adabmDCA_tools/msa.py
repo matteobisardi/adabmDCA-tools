@@ -71,8 +71,55 @@ class MultipleSequenceAlignment:
     def __len__(self):
         return self.M
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int | str):
+        """Return a ``(header, sequence)`` pair or look up an exact header.
+
+        Header lookup returns the encoded sequence. A repeated header returns
+        all matching rows; a missing header raises ``KeyError``.
+        """
+        if isinstance(idx, str):
+            matches = np.flatnonzero(self.headers == idx)
+            if not len(matches):
+                raise KeyError(idx)
+            return self.seqs[matches[0]] if len(matches) == 1 else self.seqs[matches]
         return self.headers[idx], self.seqs[idx]
+
+    def hamming(self, sequence) -> np.ndarray:
+        """Return Hamming distances to every row of this alignment.
+
+        ``sequence`` may be an aligned string, a numeric vector of shape
+        ``(L,)``, or a one-hot array/tensor of shape ``(L, q)``. Gaps count
+        as ordinary states. The result follows the MSA row order.
+        """
+        if isinstance(sequence, str):
+            if len(sequence) != self.L:
+                raise ValueError(f"Expected a sequence of length {self.L}.")
+            unknown = set(sequence) - set(self.tokens)
+            if unknown:
+                raise ValueError(f"Unknown sequence tokens: {sorted(unknown)!r}.")
+            encoded = np.asarray(encode_sequence(sequence, self.tokens))
+        else:
+            values = (
+                sequence.detach().cpu().numpy()
+                if isinstance(sequence, torch.Tensor)
+                else np.asarray(sequence)
+            )
+            if values.ndim == 2:
+                if values.shape != (self.L, self.q):
+                    raise ValueError(f"Expected one-hot shape ({self.L}, {self.q}).")
+                if not np.all((values == 0) | (values == 1)) or not np.all(values.sum(axis=1) == 1):
+                    raise ValueError("Each one-hot row must contain exactly one 1.")
+                encoded = values.argmax(axis=1)
+            elif values.ndim == 1 and values.shape[0] == self.L:
+                if not np.all(np.isfinite(values)) or not np.all(values == np.floor(values)):
+                    raise ValueError("Numeric sequence states must be finite integers.")
+                encoded = values
+            else:
+                raise ValueError(f"Expected numeric shape ({self.L},) or one-hot shape ({self.L}, {self.q}).")
+            if np.any((encoded < 0) | (encoded >= self.q)):
+                raise ValueError(f"Numeric sequence states must be between 0 and {self.q - 1}.")
+
+        return np.count_nonzero(self.seqs != encoded, axis=1)
 
     # ---------------- #
     # -- Utilities -- #
